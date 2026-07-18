@@ -4,92 +4,16 @@
 #   ./setup.sh voice    add (or reconfigure) the voice later
 set -euo pipefail
 
-# ---------- plain fallbacks (used until gum is installed, or without it) ----------
-B=$'\033[1m'; DIM=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; R=$'\033[31m'; N=$'\033[0m'
-GOLD=178; OLIVE=108; INKDIM=245
-HASGUM=0
-
+# ---------- pretty printing ----------
+B=$'\033[1m'; DIM=$'\033[2m'; G=$'\033[32m'; Y=$'\033[33m'; C=$'\033[36m'; R=$'\033[31m'; N=$'\033[0m'
+say()  { printf "%s\n" "$1"; }
+head_() { printf "\n%s%s%s\n%s\n" "$B$C" "$1" "$N" "${DIM}$2${N}"; }
 ok()   { printf "  %s✓%s %s\n" "$G" "$N" "$1"; }
 warn() { printf "  %s!%s %s\n" "$Y" "$N" "$1"; }
 die()  { printf "  %s✗ %s%s\n" "$R" "$1" "$N"; exit 1; }
-
-banner() {
-  if [ "$HASGUM" = 1 ]; then
-    gum style --border rounded --border-foreground "$GOLD" --padding "0 3" --margin "1 0" --align center \
-      "$(gum style --bold --foreground "$GOLD" 'cc-pill')" \
-      "$(gum style --foreground "$INKDIM" 'a living menu bar for Claude Code')"
-  else
-    printf "\n%s── cc-pill ──%s a living menu bar for Claude Code\n\n" "$B" "$N"
-  fi
-}
-
-head_() {  # head_ "Title" "subtitle"
-  if [ "$HASGUM" = 1 ]; then
-    echo
-    gum style --bold --foreground "$GOLD" "$1"
-    [ -n "${2:-}" ] && gum style --foreground "$INKDIM" "$2"
-  else
-    printf "\n%s%s%s\n%s%s%s\n" "$B" "$1" "$N" "$DIM" "${2:-}" "$N"
-  fi
-}
-
-ui_input() {  # ui_input VAR "prompt" "default"
-  local v
-  if [ "$HASGUM" = 1 ]; then
-    v=$(gum input --header "  $2" --prompt "  ❯ " --value "$3" --header.foreground "$INKDIM") || v="$3"
-  else
-    printf "  %s%s%s [%s]: " "$B" "$2" "$N" "$3"; read -r v
-  fi
-  eval "$1=\"\${v:-$3}\""
-}
-
-ui_write() {  # ui_write VAR "prompt"  (multiline via gum, single line fallback)
-  local v
-  if [ "$HASGUM" = 1 ]; then
-    v=$(gum write --header "  $2 (ctrl+d to finish, esc to skip)" --placeholder "..." --header.foreground "$INKDIM") || v=""
-  else
-    printf "  %s%s%s (Enter to skip): " "$B" "$2" "$N"; read -r v
-  fi
-  eval "$1=\"\$v\""
-}
-
-ui_confirm() {  # ui_confirm "question" default(y/n) -> 0 yes / 1 no
-  if [ "$HASGUM" = 1 ]; then
-    if [ "$2" = "n" ]; then
-      gum confirm --default=false --prompt.foreground "$GOLD" "$1"
-    else
-      gum confirm --prompt.foreground "$GOLD" "$1"
-    fi
-  else
-    local a; printf "  %s%s%s (y/n) [%s]: " "$B" "$1" "$N" "$2"; read -r a
-    [ "${a:-$2}" = "y" ]
-  fi
-}
-
-ui_choose() {  # ui_choose VAR "header" "opt1" "opt2" ...  -> selected option text
-  local v
-  if [ "$HASGUM" = 1 ]; then
-    v=$(gum choose --header "  $2" --cursor "  ❯ " --header.foreground "$INKDIM" \
-         --cursor.foreground "$GOLD" --selected.foreground "$GOLD" "${@:3}") || v="$3"
-  else
-    local opts=("${@:3}") i
-    printf "  %s%s%s\n" "$B" "$2" "$N"
-    for i in "${!opts[@]}"; do printf "    %d. %s\n" "$((i+1))" "${opts[$i]}"; done
-    printf "  choose [1]: "; read -r i; i="${i:-1}"
-    [[ "$i" =~ ^[0-9]+$ ]] && [ "$i" -ge 1 ] && [ "$i" -le "${#opts[@]}" ] || i=1
-    v="${opts[$((i-1))]}"
-  fi
-  eval "$1=\"\$v\""
-}
-
-ui_spin() {  # ui_spin "title" command...
-  if [ "$HASGUM" = 1 ]; then
-    gum spin --spinner moon --title "$1" --spinner.foreground "$GOLD" -- "${@:2}"
-  else
-    printf "  %s…%s %s\n" "$DIM" "$N" "$1"
-    "${@:2}"
-  fi
-}
+ask()  { local __v="$1" __p="$2" __d="$3"; local a;
+         printf "  %s%s%s [%s]: " "$B" "$__p" "$N" "$__d"; read -r a
+         eval "$__v=\"\${a:-$__d}\""; }
 
 # ---------- platform guard ----------
 [ "$(uname -s)" = "Darwin" ] || die "macOS only."
@@ -100,10 +24,7 @@ REPO="$(cd "$(dirname "$0")" && pwd)"
 DATA="$HOME/.cc-pill"
 MODE="${1:-full}"
 
-command -v gum >/dev/null && HASGUM=1
-
-# ---------- shared helpers ----------
-cfg_set() {  # cfg_set key json_value
+cfg_set() {  # cfg_set key json_value  (value must already be JSON-encoded)
   python3 - "$DATA/config.json" "$1" "$2" <<'PYEOF'
 import json, sys
 p, key, val = sys.argv[1:4]
@@ -142,90 +63,78 @@ json.dump(cfg, open(p, "w"), indent=2)
 PYEOF
 }
 
-voice_runtime() {  # venv + models in $1/voice
+voice_runtime() {  # install venv + models in $1/voice
   cd "$1/voice"
   if [ ! -x .venv/bin/python ]; then
     python3 -m venv .venv
-    ui_spin "Installing the speech engine..." .venv/bin/pip -q install kokoro-onnx soundfile
+    .venv/bin/pip -q install kokoro-onnx soundfile
     ok "venv ready"
   else
     ok "venv exists"
   fi
   mkdir -p models
-  if [ ! -f models/kokoro-v1.0.onnx ]; then
-    say_dl="Downloading voice model (310MB)..."
-    [ "$HASGUM" = 1 ] && gum style --foreground "$INKDIM" "  $say_dl" || echo "  $say_dl"
-    curl -L --progress-bar -o models/kokoro-v1.0.onnx \
-      https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
-  fi
+  [ -f models/kokoro-v1.0.onnx ] || curl -L --progress-bar -o models/kokoro-v1.0.onnx \
+    https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx
   [ -f models/voices-v1.0.bin ] || curl -L --progress-bar -o models/voices-v1.0.bin \
     https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin
   ok "models present"
 }
 
-play_sample() {  # play_sample <voice>
-  .venv/bin/python - <<PYEOF
+voice_questions() {  # voice + name + personality + summarizer; writes config + prompt.txt
+  local install="$1"
+  cd "$install/voice"
+
+  head_ "Pick a voice" "Type p<num> to hear a sample, the number to choose."
+  local VOICES=(bm_george bm_fable bm_lewis am_michael af_heart af_bella af_nicole bf_emma)
+  local DESCS=("British, warm butler" "British, storyteller" "British, deep" "American, even" "American, warm" "American, bright" "American, soft" "British, gentle")
+  VOICE="bm_george"
+  while true; do
+    for i in "${!VOICES[@]}"; do
+      printf "    %s%d%s. %-11s %s%s%s\n" "$B" "$((i+1))" "$N" "${VOICES[$i]}" "$DIM" "${DESCS[$i]}" "$N"
+    done
+    printf "  %sChoose 1-%d (p<num> to preview, Enter for 1)%s: " "$B" "${#VOICES[@]}" "$N"; read -r pick
+    pick="${pick:-1}"
+    if [[ "$pick" =~ ^p([0-9]+)$ ]]; then
+      idx=$(( ${BASH_REMATCH[1]} - 1 ))
+      VS="${VOICES[$idx]:-}"
+      [ -n "$VS" ] || continue
+      .venv/bin/python - <<PYEOF
 import soundfile as sf, subprocess, tempfile
 from kokoro_onnx import Kokoro
 k = Kokoro("models/kokoro-v1.0.onnx", "models/voices-v1.0.bin")
-s, sr = k.create("Hello. Your session just finished, and everything went beautifully.", voice="$1", speed=1.05)
+s, sr = k.create("Hello. Your session just finished, and everything went beautifully.", voice="$VS", speed=1.05)
 f = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
 sf.write(f.name, s, sr)
 subprocess.run(["afplay", f.name])
 PYEOF
-}
-
-voice_questions() {  # voice + name + personality + summarizer -> config + prompt.txt
-  local install="$1"
-  cd "$install/voice"
-
-  head_ "Pick a voice" "Every choice plays a sample before you commit."
-  local OPTS=(
-    "bm_george   · British, warm butler"
-    "bm_fable    · British, storyteller"
-    "bm_lewis    · British, deep"
-    "am_michael  · American, even"
-    "af_heart    · American, warm"
-    "af_bella    · American, bright"
-    "af_nicole   · American, soft"
-    "bf_emma     · British, gentle"
-  )
-  VOICE="bm_george"
-  while true; do
-    local choice
-    ui_choose choice "Pick a voice to hear" "${OPTS[@]}"
-    VOICE="${choice%% *}"
-    ui_spin "$VOICE is warming up..." true
-    play_sample "$VOICE"
-    ui_confirm "Keep $VOICE?" "y" && break
+      continue
+    fi
+    if [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -le "${#VOICES[@]}" ]; then
+      VOICE="${VOICES[$((pick-1))]}"
+      break
+    fi
   done
   ok "voice: $VOICE"
 
-  head_ "Name your assistant" "Spoken persona and card footer."
-  ui_input NAME "Assistant name" "Jarvis"
+  head_ "Name your assistant" "The voice persona and the card footer use this."
+  ask NAME "Assistant name" "Jarvis"
 
   head_ "Personality" "How $NAME talks about your work."
-  local P1="Playful butler       · cheeky, warm, quick with a tease"
-  local P2="Calm professional    · crisp, factual, zero fluff"
-  local P3="Describe it          · Claude writes the persona from your description"
-  local P4="Write your own       · paste persona text"
-  local pchoice
-  ui_choose pchoice "Pick a personality" "$P1" "$P2" "$P3" "$P4"
-  PERSONA=""
-  case "$pchoice" in
-    "$P2") PERSONA="- Tone: calm and professional. Crisp declarative sentences, no jokes, no filler. Think a great radio news editor: warm enough to be human, disciplined enough to never waste a word.";;
-    "$P3") local PDESC=""
-       ui_input PDESC "Describe the personality you want" "dry wit, encouraging, slightly dramatic"
-       if [ "$HASGUM" = 1 ]; then
-         PERSONA=$(gum spin --spinner moon --title "Haiku is writing the persona..." --show-output -- \
-           env PILL_INNER=1 claude -p --model haiku "Write a tone/personality instruction block for a spoken assistant named $NAME who verbally briefs a developer about their coding sessions. The personality wanted: $PDESC. Write 3-5 sentences of instruction in the second person (like 'Tone: ...'), starting with '- Tone:'. Output ONLY the instruction block, no preamble.") || PERSONA=""
-       else
-         PERSONA=$(PILL_INNER=1 claude -p --model haiku "Write a tone/personality instruction block for a spoken assistant named $NAME who verbally briefs a developer about their coding sessions. The personality wanted: $PDESC. Write 3-5 sentences of instruction in the second person (like 'Tone: ...'), starting with '- Tone:'. Output ONLY the instruction block, no preamble." 2>/dev/null) || PERSONA=""
-       fi
-       if [ -z "$PERSONA" ]; then warn "generation failed, using playful default"; fi;;
-    "$P4") ui_write PERSONA "Your persona text";;
+  say "    ${B}1${N}. Playful butler ${DIM}(cheeky, warm, quick with a tease)${N}"
+  say "    ${B}2${N}. Calm professional ${DIM}(crisp, factual, zero fluff)${N}"
+  say "    ${B}3${N}. Describe it, let Claude write it ${DIM}(generated with Haiku)${N}"
+  say "    ${B}4${N}. Paste your own persona text"
+  ask PCHOICE "Choose 1-4" "1"
+  case "$PCHOICE" in
+    2) PERSONA="- Tone: calm and professional. Crisp declarative sentences, no jokes, no filler. Think a great radio news editor: warm enough to be human, disciplined enough to never waste a word.";;
+    3) printf "  %sDescribe the personality you want%s (one line): " "$B" "$N"; read -r PDESC
+       say "  ${DIM}asking Haiku...${N}"
+       PERSONA=$(PILL_INNER=1 claude -p --model haiku "Write a tone/personality instruction block for a spoken assistant named $NAME who verbally briefs a developer about their coding sessions. The personality wanted: $PDESC. Write 3-5 sentences of instruction in the second person (like 'Tone: ...'), starting with '- Tone:'. Output ONLY the instruction block, no preamble." 2>/dev/null) || PERSONA=""
+       if [ -z "$PERSONA" ]; then warn "generation failed, using playful default"; PCHOICE=1; fi;;
+    4) say "  Paste persona lines, end with an empty line:"; PERSONA=""
+       while IFS= read -r l; do [ -z "$l" ] && break; PERSONA="$PERSONA$l"$'\n'; done;;
   esac
-  if [ -z "$PERSONA" ]; then
+  if [ "$PCHOICE" = "1" ]; then
     PERSONA="- Tone: playful and warm, with real wit. Think a cheeky best-friend-slash-butler who is genuinely good at their job: quick with a tease, delighted when things go well (\"the tests passed on the first try, I know, I'm shocked too\"), theatrically mournful about tedium (\"I renamed forty files, pray for me\")."
   fi
   CCPILL_PERSONA="$PERSONA" python3 - "$install/voice" "$NAME" <<'PYEOF'
@@ -238,7 +147,7 @@ open(os.path.join(d, "prompt.txt"), "w").write(
 PYEOF
   ok "persona rendered"
 
-  ui_input SUMMODEL "Model for summarizing briefings" "haiku"
+  ask SUMMODEL "Model for summarizing briefings" "haiku"
 
   cfg_set name "\"$NAME\""
   cfg_set voice "\"$VOICE\""
@@ -249,6 +158,7 @@ PYEOF
   cfg_set enabled "true"
   cfg_set speaker "\"$install/voice\""
 
+  # shell alias named after the assistant
   local LNAME
   LNAME=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
   if [ -n "$LNAME" ] && ! grep -q "alias $LNAME=" ~/.zshrc 2>/dev/null; then
@@ -262,29 +172,39 @@ if [ "$MODE" = "voice" ]; then
   [ -f "$DATA/config.json" ] || die "run ./setup.sh (full) first"
   INSTALL=$(python3 -c "import json,os;print(os.path.dirname(json.load(open(os.path.expanduser('$DATA/config.json'))).get('speaker', '$REPO/voice')))" 2>/dev/null || echo "$REPO")
   [ -d "$INSTALL/voice" ] || INSTALL="$REPO"
-  banner
-  head_ "Adding the voice" "Local TTS runtime + persona, for the install at $INSTALL"
+  head_ "Adding the voice" "Local TTS runtime + persona for your existing install at $INSTALL"
   voice_runtime "$INSTALL"
   voice_questions "$INSTALL"
   register_hooks "$INSTALL" 1
   ok "voice hooks registered"
   "$INSTALL/voice/.venv/bin/python" "$INSTALL/voice/say.py" "Voice is on. You'll hear from me when your sessions finish." >/dev/null 2>&1 &
-  echo
-  ok "${B}Done. New sessions will be spoken.${N}"
-  echo
+  say "\n  ${G}${B}Done. New sessions will be spoken.${N}\n"
   exit 0
 fi
 
 # ================= full setup =================
-banner
+printf "\n%s╭──────────────────────────────────────────────╮%s\n" "$C" "$N"
+printf "%s│%s   %scc-pill%s · a living menu bar for Claude Code  %s│%s\n" "$C" "$N" "$B" "$N" "$C" "$N"
+printf "%s╰──────────────────────────────────────────────╯%s\n" "$C" "$N"
 
-# ---------- dependencies (first, so gum serves the questions) ----------
-head_ "Checking dependencies" "swift toolchain, python3, tmux, jq, gum, claude CLI"
+# ---------- 1. where to install ----------
+head_ "1 · Where should cc-pill live?" "The app, scripts, and (optional) voice models stay in this folder."
+ask INSTALL "Install directory" "$REPO"
+INSTALL="${INSTALL/#\~/$HOME}"
+if [ "$INSTALL" != "$REPO" ]; then
+  mkdir -p "$INSTALL"
+  rsync -a --exclude .git "$REPO/" "$INSTALL/"
+  ok "copied to $INSTALL"
+fi
+mkdir -p "$DATA"
+
+# ---------- dependencies ----------
+head_ "Checking dependencies" "swift toolchain, python3, tmux, jq, claude CLI"
 command -v swift  >/dev/null || die "swift not found: xcode-select --install"
 command -v python3 >/dev/null || die "python3 not found"
 command -v claude >/dev/null || die "claude CLI not found (install Claude Code first)"
 MISSING=""
-for dep in tmux jq gum; do command -v "$dep" >/dev/null || MISSING="$MISSING $dep"; done
+for dep in tmux jq; do command -v "$dep" >/dev/null || MISSING="$MISSING $dep"; done
 if [ -n "$MISSING" ]; then
   if command -v brew >/dev/null; then
     warn "installing:$MISSING"
@@ -293,20 +213,8 @@ if [ -n "$MISSING" ]; then
     die "missing:$MISSING (install Homebrew or these packages, then re-run)"
   fi
 fi
-command -v gum >/dev/null && HASGUM=1
 command -v media-control >/dev/null || warn "media-control not found (audio ducking disabled): brew install media-control"
 ok "dependencies present"
-
-# ---------- 1. where to install ----------
-head_ "1 · Where should cc-pill live?" "The app, scripts, and (optional) voice models stay in this folder."
-ui_input INSTALL "Install directory" "$REPO"
-INSTALL="${INSTALL/#\~/$HOME}"
-if [ "$INSTALL" != "$REPO" ]; then
-  mkdir -p "$INSTALL"
-  rsync -a --exclude .git "$REPO/" "$INSTALL/"
-  ok "copied to $INSTALL"
-fi
-mkdir -p "$DATA"
 
 # ---------- 2. terminal ----------
 head_ "2 · Which terminal do you use?" "The card's open-terminal button focuses this app."
@@ -322,18 +230,18 @@ add_term "com.github.wez.wezterm" "WezTerm"
 add_term "net.kovidgoyal.kitty" "kitty"
 add_term "org.alacritty" "Alacritty"
 TERMS+=("com.apple.Terminal"); TERMNAMES+=("Terminal")
-TCHOICE=""
-ui_choose TCHOICE "Your terminal" "${TERMNAMES[@]}"
-TERMINAL="com.apple.Terminal"
-for i in "${!TERMNAMES[@]}"; do
-  [ "${TERMNAMES[$i]}" = "$TCHOICE" ] && TERMINAL="${TERMS[$i]}"
+for i in "${!TERMS[@]}"; do
+  printf "    %s%d%s. %s\n" "$B" "$((i+1))" "$N" "${TERMNAMES[$i]}"
 done
-ok "terminal: $TCHOICE"
+ask TPICK "Choose 1-${#TERMS[@]}" "1"
+[[ "$TPICK" =~ ^[0-9]+$ ]] && [ "$TPICK" -ge 1 ] && [ "$TPICK" -le "${#TERMS[@]}" ] || TPICK=1
+TERMINAL="${TERMS[$((TPICK-1))]}"
+ok "terminal: ${TERMNAMES[$((TPICK-1))]}"
 
 # ---------- 3. hotkey ----------
 head_ "3 · Ask-mode hotkey" "Press it anywhere to start a Claude session by voice or text."
 while true; do
-  ui_input HOTKEY "Hotkey (modifiers+key, e.g. cmd+alt+m, ctrl+shift+space)" "cmd+alt+m"
+  ask HOTKEY "Hotkey (modifiers+key, e.g. cmd+alt+m, ctrl+shift+space)" "cmd+alt+m"
   if python3 - "$HOTKEY" <<'PYEOF'
 import sys
 keys = {"a","s","d","f","h","g","z","x","c","v","b","q","w","e","r","y","t",
@@ -351,27 +259,25 @@ ok "hotkey: $HOTKEY"
 
 # ---------- 4. pill sessions ----------
 head_ "4 · Pill-launched sessions" "How hands-free should hotkey-started sessions be?"
-M1="Auto-accept edits   · file edits proceed, other actions still ask (recommended)"
-M2="Fully hands-free    · skip ALL permission prompts (only for restorable machines)"
-M3="Normal              · every permission prompts, like your regular sessions"
-PCHOICEM=""
-ui_choose PCHOICEM "Permission mode" "$M1" "$M2" "$M3"
-case "$PCHOICEM" in
-  "$M2") PERM="bypass";;
-  "$M3") PERM="default";;
+say "    ${B}1${N}. Auto-accept edits ${DIM}(file edits proceed; other actions still ask, the paw taps you)${N}"
+say "    ${B}2${N}. Fully hands-free ${DIM}(skip ALL permission prompts; only for machines you can restore)${N}"
+say "    ${B}3${N}. Normal ${DIM}(every permission prompts, like your regular sessions)${N}"
+ask PMODE "Choose 1-3" "1"
+case "$PMODE" in
+  2) PERM="bypass";;
+  3) PERM="default";;
   *) PERM="acceptEdits";;
 esac
-ui_input WORKDIR "Default working directory for pill sessions" "$HOME"
+ask WORKDIR "Default working directory for pill sessions" "$HOME"
 WORKDIR="${WORKDIR/#\~/$HOME}"
-SYSPROMPT=""
-if ui_confirm "Add extra system instructions for pill sessions?" "n"; then
-  ui_write SYSPROMPT "System instructions"
-fi
+say "  ${B}Extra system instructions for pill sessions${N} ${DIM}(optional, Enter to skip)${N}:"
+printf "  > "; read -r SYSPROMPT
 
 # ---------- 5. voice ----------
-head_ "5 · Voice briefings" "A local neural voice speaks a short summary when each turn finishes. One-time ~350MB model download; skip now and add later with: ./setup.sh voice"
-WANTVOICE="n"
-ui_confirm "Enable the voice?" "y" && WANTVOICE="y"
+head_ "5 · Voice briefings" "A local neural voice speaks a short summary when each turn finishes."
+say "    ${DIM}Needs a one-time ~350MB model download. Skip it and the island still works;${N}"
+say "    ${DIM}add it any time later with: ./setup.sh voice${N}"
+ask WANTVOICE "Enable the voice? (y/n)" "y"
 
 # ---------- write base config ----------
 CCPILL_SP="$SYSPROMPT" python3 - "$DATA/config.json" "$WORKDIR" "$INSTALL" "$PERM" "$TERMINAL" "$HOTKEY" <<'PYEOF'
@@ -404,8 +310,8 @@ fi
 
 # ---------- build + install app ----------
 head_ "Building the pill" "Swift build, app bundle, launchd agent (starts at login, auto-restarts)."
-ui_spin "Compiling..." bash -c "\"$INSTALL/app/build.sh\" >/dev/null"
-ui_spin "Installing the agent..." bash -c "\"$INSTALL/app/install-agent.sh\" >/dev/null"
+"$INSTALL/app/build.sh" >/dev/null
+"$INSTALL/app/install-agent.sh" >/dev/null
 ok "Pill.app running (supervised by launchd)"
 
 # ---------- register hooks ----------
@@ -414,10 +320,10 @@ if [ "$WANTVOICE" = "y" ]; then register_hooks "$INSTALL" 1; else register_hooks
 ok "hooks in ~/.claude/settings.json"
 
 # ---------- optional tmux wrapper ----------
-head_ "Optional · tmux wrapper" "Lets the pill send prompts to and open your own interactive claude sessions."
-if ui_confirm "Add the claude tmux wrapper to ~/.zshrc?" "y"; then
-  if ! grep -q "cc-pill claude wrapper" ~/.zshrc 2>/dev/null; then
-    cat >> ~/.zshrc <<'ZRC'
+head_ "Optional · tmux wrapper for interactive sessions" "Lets the pill send prompts to and open your own claude sessions."
+ask WRAP "Add the claude tmux wrapper to ~/.zshrc? (y/n)" "y"
+if [ "$WRAP" = "y" ] && ! grep -q "cc-pill claude wrapper" ~/.zshrc 2>/dev/null; then
+  cat >> ~/.zshrc <<'ZRC'
 
 # --- cc-pill claude wrapper: interactive claude runs inside tmux so the
 # pill can target it. Scripted calls and in-tmux runs pass straight through.
@@ -440,12 +346,9 @@ claude() {
   tmux new-session -s "$name" "command claude ${(q)@}"
 }
 ZRC
-    ok "wrapper added (open a new shell to use it)"
-  else
-    ok "wrapper already present"
-  fi
+  ok "wrapper added (open a new shell to use it)"
 else
-  warn "skipped; card prompt-send and open-terminal need it"
+  [ "$WRAP" = "y" ] && ok "wrapper already present" || warn "skipped; card prompt-send and open-terminal need it"
 fi
 
 # ---------- verify ----------
@@ -475,13 +378,8 @@ with open(os.path.join(d, f"evt-{time.time_ns()}.json"), "w") as f:
     json.dump(dict(type="end", t=time.time(), sid="setup-test", cwd="", repo="setup-test", pid=1), f)
 PYEOF
 
-echo
-if [ "$HASGUM" = 1 ]; then
-  DONE_LINES=("$(gum style --bold --foreground "$GOLD" 'Done. New Claude sessions feed the pill.')"
-              "$(gum style --foreground "$INKDIM" "$HOTKEY anywhere: ask by voice or text.")")
-  [ "$WANTVOICE" = "y" ] || DONE_LINES+=("$(gum style --foreground "$INKDIM" 'Add the voice later: ./setup.sh voice')")
-  gum style --border rounded --border-foreground "$OLIVE" --padding "0 3" --margin "0 0 1 0" "${DONE_LINES[@]}"
-else
-  printf "%sDone.%s New Claude sessions feed the pill. %s anywhere: ask by voice or text.\n" "$G$B" "$N" "$HOTKEY"
-  [ "$WANTVOICE" = "y" ] || echo "Add the voice later: ./setup.sh voice"
-fi
+printf "\n%s╭──────────────────────────────────────────────╮%s\n" "$G" "$N"
+printf "%s│%s  Done. New Claude sessions feed the pill.    %s│%s\n" "$G" "$N" "$G" "$N"
+printf "%s│%s  %s anywhere: ask by voice or text.%s\n" "$G" "$N" "$HOTKEY" "$N"
+[ "$WANTVOICE" = "y" ] || printf "%s│%s  Add the voice later: ./setup.sh voice%s\n" "$G" "$N" "$N"
+printf "%s╰──────────────────────────────────────────────╯%s\n\n" "$G" "$N"
