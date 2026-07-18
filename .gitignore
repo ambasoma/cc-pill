@@ -10,3 +10,5 @@ voice/.off
 voice/prompt.txt
 
 .DS_Store
+__pycache__/
+*.pyc
