@@ -285,12 +285,9 @@ struct PillShape: InsettableShape {
     }
     func path(in rect: CGRect) -> Path {
         let r = rect.insetBy(dx: inset, dy: inset)
-        // Top corners get a small radius too: a square top reads as a sharp
-        // rectangle whenever an open menu lightens the bar behind the pill.
-        let top = min(9, radius * 0.6)
         return Path(roundedRect: r,
-                    cornerRadii: RectangleCornerRadii(topLeading: top, bottomLeading: radius,
-                                                      bottomTrailing: radius, topTrailing: top))
+                    cornerRadii: RectangleCornerRadii(topLeading: 0, bottomLeading: radius,
+                                                      bottomTrailing: radius, topTrailing: 0))
     }
 }
 
