@@ -1,0 +1,66 @@
+#!/bin/bash
+# Voice control CLI. Alias it to your assistant's name in ~/.zshrc.
+# Self-locating: works from wherever cc-pill is installed.
+V="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+CFG="$HOME/.cc-pill/config.json"
+LOG="$V/spool/voice.log"
+
+set_cfg() {  # set_cfg <jq-filter>
+  tmp=$(mktemp) && jq "$1" "$CFG" > "$tmp" && mv "$tmp" "$CFG"
+}
+
+speak() { "$V/.venv/bin/python" "$V/say.py" "$*" & }
+
+case "$1" in
+  off|mute)
+    touch "$V/.off"
+    killall afplay 2>/dev/null
+    afplay -v 0.5 /System/Library/Sounds/Bottle.aiff &
+    echo "voice: muted" ;;
+  on|unmute)
+    rm -f "$V/.off"
+    speak "I'm back."
+    echo "voice: speaking" ;;
+  toggle)
+    if [ -e "$V/.off" ]; then "$0" on; else "$0" off; fi ;;
+  stop|shh)
+    killall afplay 2>/dev/null
+    echo "voice: stopped current playback" ;;
+  last|again)
+    line=$(grep -E '^\[[0-9:]+\] stop: ' "$LOG" 2>/dev/null | grep -Fv '(skipped)' | tail -1 | sed -E 's/^\[[0-9:]+\] stop: //')
+    if [ -n "$line" ]; then speak "$line"; else echo "voice: nothing in the log yet"; fi ;;
+  say)
+    shift; speak "$@" ;;
+  voice)
+    if [ -z "$2" ]; then jq -r '"voice: \(.voice)"' "$CFG"; else
+      set_cfg ".voice=\"$2\"" && speak "This is how I sound now." && echo "voice -> $2"
+    fi ;;
+  vol|volume)
+    if [ -z "$2" ]; then jq -r '"volume: \(.volume)"' "$CFG"; else
+      set_cfg ".volume=$2" && echo "volume -> $2"
+    fi ;;
+  speed)
+    if [ -z "$2" ]; then jq -r '"speed: \(.speed)"' "$CFG"; else
+      set_cfg ".speed=$2" && speak "Talking at the new pace now." && echo "speed -> $2"
+    fi ;;
+  log)
+    tail -n "${2:-15}" "$LOG" ;;
+  status|"")
+    [ -e "$V/.off" ] && state="MUTED (run: on)" || state="speaking"
+    echo "voice: $state"
+    jq -r '"name: \(.name)   voice: \(.voice)   volume: \(.volume)   speed: \(.speed)"' "$CFG" ;;
+  *)
+    cat <<'EOF'
+usage: pillctl <command>
+  on | off | toggle     unmute / mute (mute also cuts current speech)
+  stop                  cut current speech without muting
+  last                  replay the most recent briefing
+  say <text>            speak arbitrary text
+  voice [name]          show or set voice (bm_george, bm_fable, bm_lewis, af_heart, af_bella, ...)
+  vol [0..1]            show or set volume
+  speed [x]             show or set speaking speed
+  log [n]               show last n spoken lines (default 15)
+  status                current state (default when no command)
+EOF
+    ;;
+esac

@@ -1,0 +1,12 @@
+# build products (rebuilt by setup.sh / app/build.sh)
+app/.build/
+app/Pill.app/
+
+# voice runtime (rebuilt by setup.sh)
+voice/.venv/
+voice/models/
+voice/spool/
+voice/.off
+voice/prompt.txt
+
+.DS_Store
