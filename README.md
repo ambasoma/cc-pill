@@ -22,6 +22,8 @@ A Dynamic Island style pill floats over your macOS menu bar showing every Claude
 
 ---
 
+cc-pill grew out of running [Moon Kiln](https://moonkiln.com), my handmade clay store, with Claude Code: answering customers, managing orders, printing shipping labels, updating the storefront, planning the work in Linear. Sessions run all day while my hands are busy with clay, and I wanted to know what Claude was up to, and be asked for what it needs, without sitting at a screen. So: a pill that watches every session, cats that tell me at a glance that work is happening, and a voice that briefs me when something finishes.
+
 ## The island
 
 The pill is hidden when nothing is running. Its appearance IS the signal. Porcelain by day, kiln by night, following your system appearance with a crossfade.
