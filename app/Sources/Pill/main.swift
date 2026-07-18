@@ -7,16 +7,45 @@ final class HotKey {
     nonisolated(unsafe) static var onPress: (() -> Void)?
     private var ref: EventHotKeyRef?
 
-    func register() {
-        var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
-                                 eventKind: UInt32(kEventHotKeyPressed))
+    private static let keycodes: [String: Int] = [
+        "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8,
+        "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17,
+        "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26,
+        "8": 28, "0": 29, "o": 31, "u": 32, "i": 34, "p": 35, "l": 37, "j": 38,
+        "k": 40, "n": 45, "m": 46, "space": 49, "`": 50,
+    ]
+
+    /// "cmd+alt+m" style spec -> (keycode, modifiers). Nil if unparseable.
+    static func parse(_ spec: String) -> (UInt32, UInt32)? {
+        var mods: UInt32 = 0
+        var key: UInt32?
+        for raw in spec.lowercased().split(separator: "+") {
+            let tok = raw.trimmingCharacters(in: .whitespaces)
+            switch tok {
+            case "cmd", "command": mods |= UInt32(cmdKey)
+            case "alt", "opt", "option": mods |= UInt32(optionKey)
+            case "ctrl", "control": mods |= UInt32(controlKey)
+            case "shift": mods |= UInt32(shiftKey)
+            default:
+                guard let k = keycodes[tok] else { return nil }
+                key = UInt32(k)
+            }
+        }
+        guard let k = key, mods != 0 else { return nil }
+        return (k, mods)
+    }
+
+    func register(_ spec: String) {
+        guard let (key, mods) = Self.parse(spec) ?? Self.parse("cmd+alt+m") else { return }
+        var eventSpec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
+                                      eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
             DispatchQueue.main.async { HotKey.onPress?() }
             return noErr
-        }, 1, &spec, nil, nil)
+        }, 1, &eventSpec, nil, nil)
         let id = EventHotKeyID(signature: OSType(0x4D4F4F4E), id: 1)  // 'MOON'
-        RegisterEventHotKey(UInt32(kVK_ANSI_M), UInt32(cmdKey | optionKey),
-                            id, GetApplicationEventTarget(), 0, &ref)
+        RegisterEventHotKey(key, mods, id, GetApplicationEventTarget(), 0, &ref)
+        MBLog.log("hotkey registered: \(spec)")
     }
 }
 
@@ -82,12 +111,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor in self?.updateHotRegion() }
         }
 
-        // ⌥⌘M anywhere: open ask mode (press again to send).
+        // Ask-mode hotkey (configurable): open ask mode, press again to send.
         HotKey.onPress = {
             let s = Store.shared
             if s.asking { s.sendAsk() } else { s.startAsk() }
         }
-        hotkey.register()
+        hotkey.register(Store.shared.config.hotkey)
 
         EventWatcher.shared.start()
         Store.shared.adoptExisting()
