@@ -40,8 +40,14 @@ struct MBConfig {
     var homeRepo: String = NSHomeDirectory()
     /// Extra system instructions for pill-launched sessions (optional).
     var pillSystemPrompt = ""
-    /// Pill-launched sessions skip permission prompts so they finish hands-free.
-    var autoMode = true
+    /// Permission mode for pill-launched sessions:
+    /// "acceptEdits" (auto-accept file edits, other tools still prompt),
+    /// "bypass" (skip all permission prompts), or "default".
+    var permissionMode = "acceptEdits"
+    /// Terminal app used by "open terminal" (bundle id).
+    var terminalBundle = "com.apple.Terminal"
+    /// Ask-mode global hotkey, e.g. "cmd+alt+m".
+    var hotkey = "cmd+alt+m"
     /// Idle pill sessions are garbage collected after this many minutes
     /// (done, detached, untouched). 0 disables GC.
     var pillGCMinutes = 30.0
@@ -67,7 +73,9 @@ struct MBConfig {
             if let s = obj["home_repo"] as? String {
                 cfg.homeRepo = NSString(string: s).expandingTildeInPath
             }
-            if let b = obj["auto_mode"] as? Bool { cfg.autoMode = b }
+            if let p = obj["permission_mode"] as? String, !p.isEmpty { cfg.permissionMode = p }
+            if let t = obj["terminal"] as? String, !t.isEmpty { cfg.terminalBundle = t }
+            if let h = obj["hotkey"] as? String, !h.isEmpty { cfg.hotkey = h }
             if let s = obj["claude_bin"] as? String { cfg.claudeBin = s }
             if let m = obj["pill_gc_minutes"] as? Double { cfg.pillGCMinutes = m }
         }
@@ -627,15 +635,18 @@ enum Actions {
             if let c = names.first {
                 run(["tmux", "switch-client", "-c", c, "-t", sess])
                 MBLog.log("switched client \(c) to \(sess)")
-            } else {
+            } else if Store.shared.config.terminalBundle == "com.mitchellh.ghostty" {
                 // No attached client: open a fresh Ghostty window attached to it.
                 run(["open", "-na", "Ghostty", "--args", "-e", "tmux", "attach", "-t", sess])
                 MBLog.log("opened new Ghostty attached to \(sess)")
+            } else {
+                MBLog.log("no attached tmux client; attach manually: tmux attach -t \(sess)")
             }
         } else {
-            MBLog.log("no tmux pane for \(s.cwd); just focusing Ghostty")
+            MBLog.log("no tmux pane for \(s.cwd); focusing the terminal")
         }
-        if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.mitchellh.ghostty") {
+        if let app = NSWorkspace.shared.urlForApplication(
+            withBundleIdentifier: Store.shared.config.terminalBundle) {
             NSWorkspace.shared.openApplication(at: app, configuration: .init())
         }
     }
@@ -673,7 +684,11 @@ enum Actions {
                 name = "cc-\(repoName)-pill-\(n)"; n += 1
             }
             var cmd = [cfg.claudeBin]
-            if cfg.autoMode { cmd.append("--dangerously-skip-permissions") }
+            switch cfg.permissionMode {
+            case "bypass": cmd.append("--dangerously-skip-permissions")
+            case "default": break
+            default: cmd += ["--permission-mode", "acceptEdits"]
+            }
             if !cfg.pillSystemPrompt.isEmpty {
                 cmd += ["--append-system-prompt", cfg.pillSystemPrompt]
             }
