@@ -153,9 +153,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// state) plus the card when it is open. Pointer inside: the window
     /// takes mouse events and the card peeks open. Pointer outside: the
     /// window is click-through and hover ends (debounced in the store).
+    private var menuTick = 0
+    private var menuOpen = false
+
+    /// True while any menu (menu bar dropdown, status item, context menu)
+    /// is on screen. The pill is a dark slab over the menu bar; when a menu
+    /// opens, the bar lightens behind it and the silhouette shows, so the
+    /// pill steps aside instead.
+    private func menuIsOpen() -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID)
+                as? [[String: Any]] else { return false }
+        let menuLevel = Int(CGWindowLevelForKey(.popUpMenuWindow))
+        let me = ProcessInfo.processInfo.processIdentifier
+        return list.contains { w in
+            (w[kCGWindowLayer as String] as? Int) == menuLevel &&
+            (w[kCGWindowOwnerPID as String] as? Int32) != me
+        }
+    }
+
     private func updateHotRegion() {
         guard visible, let screen = NSScreen.screens.first else { return }
         let store = Store.shared
+        // Courtesy fade while the user is in a menu (checked every ~0.25s).
+        menuTick += 1
+        if menuTick % 3 == 0 {
+            let open = menuIsOpen() && !store.asking
+            if open != menuOpen {
+                menuOpen = open
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.18
+                    panel.animator().alphaValue = open ? 0 : 1
+                }
+                MBLog.log(open ? "menu open: pill stepping aside" : "menu closed: pill back")
+            }
+        }
+        if menuOpen {
+            if !panel.ignoresMouseEvents { panel.ignoresMouseEvents = true }
+            store.setHover(false)
+            return
+        }
         // Ask mode owns the mouse and keyboard while it is open.
         if store.asking {
             if panel.ignoresMouseEvents { panel.ignoresMouseEvents = false }
