@@ -2,7 +2,7 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/hero-night.png">
-  <img src="docs/hero-day.png" alt="The cc-pill island narrating a working Claude Code session while a tiny cat runs across it" width="480">
+  <img src="docs/hero-day.png" alt="The cc-pill island narrating a working Claude Code session while a tiny cat runs across it" width="240">
 </picture>
 
 # cc-pill
@@ -33,7 +33,7 @@ The pill is hidden when nothing is running. Its appearance IS the signal. Porcel
       <sub><b>Resting.</b> Sun or moon, one dot per session. Slim enough to live inside the menu bar.</sub>
     </td>
     <td align="center" width="33%">
-      <img src="docs/working-day.png" alt="Working pill narrating: editing PillView.swift, with a cat running across" width="220"><br>
+      <img src="docs/working-day.png" alt="Working pill narrating: editing PillView.swift, with a cat running across" width="205"><br>
       <sub><b>Working.</b> Live narration of what Claude is doing, and the cats take laps.</sub>
     </td>
     <td align="center" width="33%">
@@ -47,18 +47,21 @@ The pill is hidden when nothing is running. Its appearance IS the signal. Porcel
       <sub><b>Briefing.</b> The pill blooms as the voice starts, words paced to the audio.</sub>
     </td>
     <td align="center">
-      <img src="docs/star-moment.png" alt="A cat sitting next to a gold star pop after a good turn" width="160"><br>
+      <img src="docs/star-moment.png" alt="A cat sitting next to a gold star pop after a good turn" width="176"><br>
       <sub><b>Turn-end moments.</b> A star pop for good news, an ears-back walk-off for failures.</sub>
     </td>
     <td align="center">
-      <img src="docs/working-night.png" alt="Night pill: dark kiln tones, crescent moon, ember glow, white cat" width="220"><br>
+      <img src="docs/working-night.png" alt="Night pill: dark kiln tones, crescent moon, ember glow, white cat" width="208"><br>
       <sub><b>Night.</b> Kiln tones, crescent moon, and an ember breathing behind the cats.</sub>
     </td>
   </tr>
 </table>
 
 <div align="center">
-  <img src="docs/card.png" alt="The session card: two sessions with state, elapsed time, and replay, speak, terminal buttons" width="420"><br>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/card-night.png">
+    <img src="docs/card.png" alt="The session card: two sessions with state, elapsed time, and replay, speak, terminal buttons" width="452">
+  </picture><br>
   <sub><b>The card.</b> Hover the pill to peek, click to pin. One row per session with replay-briefing, speak-a-prompt, and open-terminal buttons.</sub>
 </div>
 
