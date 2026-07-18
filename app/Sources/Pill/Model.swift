@@ -51,6 +51,12 @@ struct MBConfig {
     /// Idle pill sessions are garbage collected after this many minutes
     /// (done, detached, untouched). 0 disables GC.
     var pillGCMinutes = 30.0
+    /// Brand fonts (config keys "font" and "font_body"): display for short
+    /// labels, body for reading text. A family's -Regular/-Medium/-SemiBold/
+    /// -Bold faces must be installed. Nil = system font; body falls back to
+    /// display when only "font" is set.
+    var fontFamily: String? = nil
+    var bodyFontFamily: String? = nil
     var claudeBin: String = {
         for p in ["/opt/homebrew/bin/claude",
                   NSString(string: "~/.local/bin/claude").expandingTildeInPath,
@@ -74,6 +80,8 @@ struct MBConfig {
                 cfg.homeRepo = NSString(string: s).expandingTildeInPath
             }
             if let p = obj["permission_mode"] as? String, !p.isEmpty { cfg.permissionMode = p }
+            if let f = obj["font"] as? String, !f.isEmpty { cfg.fontFamily = f }
+            if let f = obj["font_body"] as? String, !f.isEmpty { cfg.bodyFontFamily = f }
             if let t = obj["terminal"] as? String, !t.isEmpty { cfg.terminalBundle = t }
             if let h = obj["hotkey"] as? String, !h.isEmpty { cfg.hotkey = h }
             if let s = obj["claude_bin"] as? String { cfg.claudeBin = s }

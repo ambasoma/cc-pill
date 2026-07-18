@@ -15,7 +15,7 @@ struct CardView: View {
                 .buttonStyle(.plain)
                 .help("Start a new session by voice (⌥⌘M)")
             }
-            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .font(mkFont(10, .medium, design: .monospaced))
             .kerning(1.2)
             .foregroundColor(theme.pillInk.opacity(0.55))
             .padding(.horizontal, 14)
@@ -37,7 +37,7 @@ struct CardView: View {
                 }
                 .buttonStyle(.plain)
             }
-            .font(.system(size: 11))
+            .font(mkFont(11))
             .foregroundColor(theme.pillInk.opacity(0.6))
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
@@ -72,11 +72,11 @@ struct SessionRow: View {
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 5) {
                         Text(session.repo)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(mkFont(13, .semibold))
                             .foregroundColor(theme.pillInk)
                         if session.remote {
                             Text("ssh")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .font(mkFont(9, .medium, design: .monospaced))
                                 .foregroundColor(theme.pillInk.opacity(0.5))
                                 .padding(.horizontal, 4).padding(.vertical, 1)
                                 .overlay(Capsule().stroke(theme.pillInk.opacity(0.3), lineWidth: 0.5))
@@ -84,7 +84,7 @@ struct SessionRow: View {
                     }
                     TimelineView(.periodic(from: .now, by: 20)) { ctx in
                         Text(detail(at: ctx.date))
-                            .font(.system(size: 11))
+                            .font(mkBodyFont(11))
                             .foregroundColor(theme.pillInk.opacity(0.55))
                     }
                 }
@@ -150,14 +150,14 @@ struct PromptInput: View {
                 HStack(spacing: 6) {
                     WaveBars(color: theme.amber)
                     Text(speech.transcript.isEmpty ? "listening…" : speech.transcript)
-                        .font(.system(size: 12))
+                        .font(mkBodyFont(12))
                         .foregroundColor(theme.pillInk.opacity(speech.transcript.isEmpty ? 0.5 : 0.95))
                         .lineLimit(3)
                     Spacer()
                 }
             case .denied, .unavailable:
                 Text(speech.phase == .denied ? "mic permission denied · type instead" : "no mic detected · type instead")
-                    .font(.system(size: 10.5))
+                    .font(mkBodyFont(10.5))
                     .foregroundColor(theme.amber)
             default:
                 EmptyView()
@@ -166,7 +166,7 @@ struct PromptInput: View {
             HStack(spacing: 8) {
                 TextField("prompt for \(session.repo)…", text: bindingText)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12))
+                    .font(mkBodyFont(12))
                     .foregroundColor(theme.pillInk)
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 9)
@@ -174,7 +174,7 @@ struct PromptInput: View {
                     .onSubmit { send() }
                 Button(action: send) {
                     Text("send")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(mkFont(11, .semibold))
                         .foregroundColor(theme.pillBG)
                         .padding(.horizontal, 12).padding(.vertical, 6)
                         .background(Capsule().fill(theme.olive))
@@ -242,7 +242,7 @@ struct ActionButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 10, weight: .medium))
+                .font(mkFont(10, .medium))
                 .foregroundColor(theme.pillInk.opacity(disabled ? 0.25 : 0.8))
                 .frame(width: 26, height: 26)
                 .background(Circle().fill(theme.pillInk.opacity(hover && !disabled ? 0.12 : 0)))

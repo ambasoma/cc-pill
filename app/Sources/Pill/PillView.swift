@@ -1,5 +1,37 @@
 import SwiftUI
 
+/// Every piece of island text goes through these two. Display (mkFont) carries
+/// the short branded labels, body (mkBodyFont) carries reading text. Set the
+/// "font" / "font_body" config keys to installed family names to brand the
+/// island; unset families fall back to the system font unchanged.
+private func brandFace(_ family: String, _ weight: Font.Weight, _ size: CGFloat) -> Font {
+    let stem = family.replacingOccurrences(of: " ", with: "")
+    let face: String
+    switch weight {
+    case .bold, .heavy, .black: face = "\(stem)-Bold"
+    case .semibold: face = "\(stem)-SemiBold"
+    case .medium: face = "\(stem)-Medium"
+    default: face = "\(stem)-Regular"
+    }
+    return .custom(face, size: size)
+}
+
+func mkFont(_ size: CGFloat, _ weight: Font.Weight = .regular,
+            design: Font.Design = .default) -> Font {
+    guard let fam = Store.shared.config.fontFamily else {
+        return .system(size: size, weight: weight, design: design)
+    }
+    return brandFace(fam, weight, size)
+}
+
+func mkBodyFont(_ size: CGFloat, _ weight: Font.Weight = .regular,
+                design: Font.Design = .default) -> Font {
+    guard let fam = Store.shared.config.bodyFontFamily ?? Store.shared.config.fontFamily else {
+        return .system(size: size, weight: weight, design: design)
+    }
+    return brandFace(fam, weight, size)
+}
+
 // MARK: - Theme (porcelain by day, kiln by night)
 
 struct Theme {
@@ -124,7 +156,7 @@ struct PillView: View {
                 MomentView(moment: m, theme: theme)
                     .frame(width: m.kind == .sad ? 110 : 64, height: 21)
                 Text(m.repo)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(mkFont(11, .medium))
                     .foregroundColor(theme.pillInk.opacity(0.7))
             case .speaking:
                 if let b = store.briefing {
@@ -139,7 +171,7 @@ struct PillView: View {
                 }
                 TextField(listenPlaceholder, text: askBinding, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(mkBodyFont(12.5, .medium))
                     .foregroundColor(theme.pillInk)
                     .lineLimit(1...3)
                     .focused($askFocus)
@@ -148,7 +180,7 @@ struct PillView: View {
                     .onAppear { askFocus = true }
                 Button(action: { store.sendAsk() }) {
                     Text("go")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(mkFont(11, .semibold))
                         .foregroundColor(theme.pillBG)
                         .padding(.horizontal, 11).padding(.vertical, 4)
                         .background(Capsule().fill(theme.olive))
@@ -156,7 +188,7 @@ struct PillView: View {
                 .buttonStyle(.plain)
                 Button(action: { store.cancelAsk() }) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(mkFont(9, .semibold))
                         .foregroundColor(theme.pillInk.opacity(0.55))
                         .frame(width: 20, height: 20)
                         .background(Circle().fill(theme.pillInk.opacity(0.08)))
@@ -356,7 +388,7 @@ struct LabelReveal: View {
                 return acc + Text(item.element + (item.offset < words.count - 1 ? " " : ""))
                     .foregroundColor(ink.opacity(0.1 + 0.9 * f))
             }
-            .font(.system(size: 11, weight: .medium))
+            .font(mkFont(11, .medium))
             .lineLimit(1)
         }
         .onAppear { born = Date() }
@@ -374,7 +406,7 @@ struct WaitingLabel: View {
                 .max(by: { $0.since < $1.since })
             let mins = w.map { Int(ctx.date.timeIntervalSince($0.since) / 60) } ?? 0
             Text(mins >= 2 ? "needs you · \(mins)m" : "needs you")
-                .font(.system(size: 11, weight: .medium))
+                .font(mkFont(11, .medium))
                 .foregroundColor(ink)
                 .lineLimit(1)
         }
@@ -433,7 +465,7 @@ struct RevealText: View {
                 acc + Text(item.element + " ")
                     .foregroundColor(ink.opacity(item.offset < shown ? 1 : 0.15))
             }
-            .font(.system(size: 12.5, weight: .medium))
+            .font(mkBodyFont(12.5, .medium))
             .lineSpacing(2)
             .frame(maxWidth: 340, alignment: .leading)
         }
@@ -464,7 +496,7 @@ struct ToastView: View {
     let theme: Theme
     var body: some View {
         Text(text)
-            .font(.system(size: 11, weight: .medium))
+            .font(mkBodyFont(11, .medium))
             .foregroundColor(theme.pillInk)
             .padding(.horizontal, 12).padding(.vertical, 5)
             .background(Capsule().fill(theme.pillBG))

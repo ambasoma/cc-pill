@@ -139,6 +139,8 @@ Setup writes this for you; edit and the app picks it up on restart.
 | `hotkey` | `"cmd+alt+m"` | Ask-mode hotkey. |
 | `pill_gc_minutes` | `30` | Minutes before an idle pill-launched session is collected (`0` disables). |
 | `pill_system_prompt` | `""` | Extra system instructions appended to pill-launched sessions. |
+| `font` | system | Display font family for the island's labels (e.g. `"Grandstander"`). The family's -Regular/-Medium/-SemiBold/-Bold faces must be installed. |
+| `font_body` | falls back to `font` | Font family for reading text (briefings, card detail, prompt fields). |
 | `enabled` | | Voice on/off (what `mute`/`on` toggle). |
 | `voice`, `speed`, `volume` | | Kokoro voice and delivery. |
 | `summarizer_model` | `haiku` | Model that writes the spoken line. |
