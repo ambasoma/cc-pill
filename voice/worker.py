@@ -174,7 +174,10 @@ def other_audio_playing():
     out = _media("get")
     if out and out.returncode == 0 and out.stdout.strip():
         try:
-            return bool(json.loads(out.stdout).get("playing"))
+            data = json.loads(out.stdout)
+            # media-control prints the JSON literal null when nothing is
+            # registered with Now Playing.
+            return bool(isinstance(data, dict) and data.get("playing"))
         except ValueError:
             pass
     return False
