@@ -204,7 +204,7 @@ struct PillView: View {
             return 0
         }())
         .frame(width: pillWidth(state), height: pillHeight(state), alignment: alignmentFor(state))
-        .frame(minHeight: isSpeaking(state) ? 44 : nil)
+        .frame(minWidth: pillMinWidth(state), minHeight: isSpeaking(state) ? 44 : nil)
         .background(
             ZStack(alignment: .top) {
                 PillShape(radius: cornerFor(state))
@@ -273,12 +273,23 @@ struct PillView: View {
     private func pillWidth(_ s: PillState) -> CGFloat? {
         switch s {
         case .hidden: return 0
-        case .idle: return 70
+        // Under a notch the resting pill spans the notch exactly: a slim
+        // lip hanging from the hardware, dots and glyph centered in it.
+        case .idle: return store.notch?.width ?? 70
         case .working: return nil    // sized by the narrated label
         case .waiting: return nil
         case .speaking: return 430
         case .moment: return nil
         case .listening: return 430
+        }
+    }
+    /// Flexible states never render narrower than the notch, so the pill
+    /// always reads as the hardware itself swelling, never a sliver under it.
+    private func pillMinWidth(_ s: PillState) -> CGFloat? {
+        guard let n = store.notch?.width else { return nil }
+        switch s {
+        case .working, .waiting, .moment: return n
+        default: return nil
         }
     }
     private func pillHeight(_ s: PillState) -> CGFloat? {

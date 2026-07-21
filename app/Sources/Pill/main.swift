@@ -49,6 +49,36 @@ final class HotKey {
     }
 }
 
+/// The camera notch on built-in MacBook displays, in points. The top-center
+/// of a notched screen is dead pixels: a pill pinned there vanishes behind
+/// the hardware. When a notch is present the pill instead docks to its
+/// bottom edge and matches its width, so the notch itself becomes the
+/// resting island and the pill reads as the hardware swelling downward.
+struct NotchInfo: Equatable {
+    let width: CGFloat
+    let height: CGFloat
+
+    static func of(_ screen: NSScreen) -> NotchInfo? {
+        // Rehearsal knob for machines without a notch: CC_PILL_FAKE_NOTCH
+        // ("200x37", or any value for the 14" MacBook Pro shape).
+        if let fake = ProcessInfo.processInfo.environment["CC_PILL_FAKE_NOTCH"] {
+            let parts = fake.split(separator: "x").compactMap { Double($0) }
+            return parts.count == 2
+                ? NotchInfo(width: parts[0], height: parts[1])
+                : NotchInfo(width: 200, height: 37)
+        }
+        let inset = screen.safeAreaInsets.top
+        guard inset > 0 else { return nil }
+        let aux = (screen.auxiliaryTopLeftArea?.width ?? 0)
+                + (screen.auxiliaryTopRightArea?.width ?? 0)
+        let width = screen.frame.width - aux
+        // No auxiliary areas would make "the notch" the whole screen; that
+        // combination is not a notch, whatever safeAreaInsets claims.
+        guard width > 0, width < screen.frame.width / 2 else { return nil }
+        return NotchInfo(width: width, height: inset)
+    }
+}
+
 /// Borderless, non-activating panel that floats over the menu bar.
 final class IslandPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -98,12 +128,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // with zero frame churn. The window ignores the mouse except when
         // the pointer is actually over the pill or the card (checked below),
         // so the big transparent area never blocks clicks underneath.
-        if let screen = NSScreen.screens.first {
-            let f = screen.frame
-            let rect = NSRect(x: (f.midX - Self.panelSize.width / 2).rounded(),
-                              y: f.maxY - Self.panelSize.height,
-                              width: Self.panelSize.width, height: Self.panelSize.height)
-            panel.setFrame(rect, display: true)
+        repositionPanel()
+        // Lid opened or closed, display plugged or unplugged, resolution
+        // changed: recompute the frame and the notch instead of needing a
+        // restart. Docking a notched MacBook flips modes on the fly.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.repositionPanel() }
         }
         panel.ignoresMouseEvents = true
 
@@ -148,6 +180,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     static let panelSize = CGSize(width: 560, height: 480)
+
+    /// Pin the window to the top-center of the primary screen; on notched
+    /// MacBooks, to the notch's bottom edge so the pill hangs from the
+    /// hardware instead of vanishing behind it.
+    private func repositionPanel() {
+        guard let screen = NSScreen.screens.first else { return }
+        let notch = NotchInfo.of(screen)
+        if Store.shared.notch != notch {
+            Store.shared.notch = notch
+            MBLog.log(notch.map { "notch mode: \(Int($0.width))x\(Int($0.height))" }
+                      ?? "no notch: pill over the menu bar")
+        }
+        let f = screen.frame
+        let rect = NSRect(x: (f.midX - Self.panelSize.width / 2).rounded(),
+                          y: f.maxY - (notch?.height ?? 0) - Self.panelSize.height,
+                          width: Self.panelSize.width, height: Self.panelSize.height)
+        if panel.frame != rect { panel.setFrame(rect, display: true) }
+    }
 
     /// The interactive region in screen coordinates: the pill (per current
     /// state) plus the card when it is open. Pointer inside: the window
@@ -204,18 +254,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.resignKey()
         }
         let f = screen.frame
-        let top = f.maxY
+        let notchW = store.notch?.width ?? 0
+        let top = f.maxY - (store.notch?.height ?? 0)
         let cx = f.midX
 
         var pillW: CGFloat = 0
         var pillH: CGFloat = 0
         switch store.pillState {
         case .hidden: break
-        case .idle: pillW = 70; pillH = 22
-        case .working: pillW = 300; pillH = 27      // generous: label width varies
-        case .waiting: pillW = 190; pillH = 70      // includes the paw underneath
+        case .idle: pillW = max(70, notchW); pillH = 22
+        case .working: pillW = max(300, notchW); pillH = 27  // generous: label width varies
+        case .waiting: pillW = max(190, notchW); pillH = 70  // includes the paw underneath
         case .speaking: pillW = 460; pillH = 120
-        case .moment: pillW = 220; pillH = 30
+        case .moment: pillW = max(220, notchW); pillH = 30
         case .listening: pillW = 460; pillH = 120   // unreachable: asking returns above
         }
         var hot = false

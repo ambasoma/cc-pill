@@ -28,6 +28,8 @@ cc-pill grew out of running [Moon Kiln](https://moonkiln.com), my handmade clay 
 
 The pill is hidden when nothing is running. Its appearance IS the signal. Porcelain by day, kiln by night, following your system appearance with a crossfade.
 
+On notched MacBooks the pill goes full Dynamic Island: it docks to the notch's bottom edge and matches its exact width, so the resting state reads as the hardware itself and the speaking bloom expands out from under it. Plug in an external display and it switches back to the over-the-menu-bar look on the fly.
+
 <table align="center">
   <tr>
     <td align="center" width="33%">

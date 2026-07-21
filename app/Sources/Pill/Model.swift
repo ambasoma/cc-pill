@@ -157,6 +157,7 @@ final class Store: ObservableObject {
     @Published var askDraft = ""
     @Published var pinned = false
     @Published var hovering = false
+    @Published var notch: NotchInfo?  // set when the pill lives under a MacBook notch
 
     // MARK: ask mode (start a new session from the pill)
 
