@@ -5,15 +5,24 @@ Runs detached from the session (spawned by hook.py). Pipeline:
   1. Pull the text to speak (last assistant message for Stop, the
      notification message for Notification).
   2. Rewrite it into a short spoken briefing with `claude -p` (Haiku).
-  3. Synthesize with Kokoro (local ONNX) and play via afplay.
+  3. Synthesize with Kokoro (local ONNX) and play it.
 
 A spool lock serializes playback so two finishing sessions never talk
 over each other. Also drops "briefing" events for the pill app so its
 bloom syncs with the first spoken word.
+
+Platform layer (everything OS-specific lives in the few functions marked
+"platform" below):
+  macOS  afplay for playback, media-control for ducking, lsappinfo for the
+         frontmost app.
+  Linux  pw-play / paplay / aplay / ffplay for playback, playerctl (MPRIS)
+         for ducking, kdotool (KWin) or xdotool (X11) for the active window.
 """
 import json
 import os
 import re
+import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -21,6 +30,7 @@ import time
 VOICE_DIR = os.path.dirname(os.path.abspath(__file__))
 SPOOL = os.path.join(VOICE_DIR, "spool")
 LOCK = os.path.join(SPOOL, "playback.lock")
+PLAYER_PID = os.path.join(SPOOL, "player.pid")
 NOTIFY_STAMP = os.path.join(SPOOL, "last-notify")
 SPOKE_STAMP = os.path.join(SPOOL, "last-spoke")
 STOP_STAMP = os.path.join(SPOOL, "last-stop")
@@ -28,6 +38,8 @@ CONFIG = os.path.expanduser("~/.cc-pill/config.json")
 
 MODEL_ONNX = os.path.join(VOICE_DIR, "models", "kokoro-v1.0.onnx")
 VOICES_BIN = os.path.join(VOICE_DIR, "models", "voices-v1.0.bin")
+
+IS_MAC = sys.platform == "darwin"
 
 
 def load_config():
@@ -154,6 +166,16 @@ def pill_event(evt):
         pass
 
 
+def _run(args, timeout=3):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------- platform:
+# audio ducking. macOS: media-control (Now Playing). Linux: playerctl (MPRIS).
+
 MEDIA_CONTROL = (
     "/opt/homebrew/bin/media-control"
     if os.path.exists("/opt/homebrew/bin/media-control")
@@ -162,32 +184,87 @@ MEDIA_CONTROL = (
 
 
 def _media(cmd):
-    try:
-        return subprocess.run(
-            [MEDIA_CONTROL, cmd], capture_output=True, text=True, timeout=3
-        )
-    except Exception:
+    return _run([MEDIA_CONTROL, cmd])
+
+
+def _mpris_playing():
+    """Names of MPRIS players currently playing (Linux, via playerctl)."""
+    if not shutil.which("playerctl"):
+        return []
+    out = _run(["playerctl", "-l"])
+    if not out or out.returncode != 0:
+        return []
+    playing = []
+    for name in out.stdout.split():
+        st = _run(["playerctl", "-p", name, "status"])
+        if st and st.returncode == 0 and st.stdout.strip() == "Playing":
+            playing.append(name)
+    return playing
+
+
+def duck_begin():
+    """Pause whatever the user is listening to. Returns a token for duck_end,
+    or None when nothing was playing (or ducking is unavailable)."""
+    if IS_MAC:
+        out = _media("get")
+        if out and out.returncode == 0 and out.stdout.strip():
+            try:
+                data = json.loads(out.stdout)
+                # media-control prints the JSON literal null when nothing is
+                # registered with Now Playing.
+                if isinstance(data, dict) and data.get("playing"):
+                    _media("pause")
+                    return "mac"
+            except ValueError:
+                pass
         return None
+    players = _mpris_playing()
+    for p in players:
+        _run(["playerctl", "-p", p, "pause"])
+    return players or None
+
+
+def duck_end(token):
+    if not token:
+        return
+    if token == "mac":
+        _media("play")
+        return
+    for p in token:
+        _run(["playerctl", "-p", p, "play"])
 
 
 def other_audio_playing():
-    out = _media("get")
-    if out and out.returncode == 0 and out.stdout.strip():
-        try:
-            data = json.loads(out.stdout)
-            # media-control prints the JSON literal null when nothing is
-            # registered with Now Playing.
-            return bool(isinstance(data, dict) and data.get("playing"))
-        except ValueError:
-            pass
-    return False
+    """Kept for callers that only want to know, without pausing anything."""
+    if IS_MAC:
+        out = _media("get")
+        if out and out.returncode == 0 and out.stdout.strip():
+            try:
+                data = json.loads(out.stdout)
+                return bool(isinstance(data, dict) and data.get("playing"))
+            except ValueError:
+                pass
+        return False
+    return bool(_mpris_playing())
 
+
+# ---------------------------------------------------------------- platform:
+# is the user already looking at this session's terminal?
 
 TERMINAL_APPS = {"Ghostty", "Terminal", "iTerm2", "WezTerm", "kitty", "Alacritty"}
 
+# Window classes (lowercased) of terminals on Linux desktops.
+TERMINAL_CLASSES = {
+    "konsole", "org.kde.konsole", "yakuake", "org.kde.yakuake", "kitty", "alacritty",
+    "wezterm", "org.wezfurlong.wezterm", "ghostty", "com.mitchellh.ghostty", "foot",
+    "footclient", "gnome-terminal", "gnome-terminal-server", "org.gnome.terminal",
+    "org.gnome.console", "kgx", "xterm", "urxvt", "st", "st-256color", "tilix",
+    "terminator", "xfce4-terminal", "tmux",
+}
+
 
 def frontmost_app():
-    """Name of the frontmost app, via lsappinfo (no permissions needed)."""
+    """Name of the frontmost app, via lsappinfo (macOS, no permissions needed)."""
     try:
         asn = subprocess.run(
             ["lsappinfo", "front"], capture_output=True, text=True, timeout=3
@@ -204,6 +281,27 @@ def frontmost_app():
         return ""
 
 
+def active_window_class():
+    """Window class of the focused window on Linux: kdotool talks to KWin
+    (Wayland and X11), xdotool covers other X11 sessions. Empty if unknown."""
+    if shutil.which("kdotool"):
+        out = _run(["kdotool", "getactivewindow", "getwindowclassname"])
+        if out and out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().splitlines()[-1]
+    if shutil.which("xdotool") and os.environ.get("DISPLAY"):
+        out = _run(["xdotool", "getactivewindow", "getwindowclassname"])
+        if out and out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip().splitlines()[-1]
+    return ""
+
+
+def terminal_in_front():
+    if IS_MAC:
+        return frontmost_app() in TERMINAL_APPS
+    cls = active_window_class().lower()
+    return bool(cls) and (cls in TERMINAL_CLASSES or cls.split(".")[-1] in TERMINAL_CLASSES)
+
+
 def session_on_screen(cwd):
     """True when the user is already looking at this session's terminal.
 
@@ -211,7 +309,7 @@ def session_on_screen(cwd):
     pane in this cwd): the pane must be the active pane of an attached
     client. Otherwise falls back to "a terminal app is frontmost".
     """
-    if frontmost_app() not in TERMINAL_APPS:
+    if not terminal_in_front():
         return False
     if cwd:
         try:
@@ -239,15 +337,64 @@ def session_on_screen(cwd):
     return True
 
 
-def speak(text, cfg, meta=None):
+# ---------------------------------------------------------------- platform:
+# playback.
+
+def player_command(wav, volume):
+    """Command line that plays a WAV file, or None when no player exists.
+
+    afplay takes the volume itself. The Linux players don't agree on a
+    volume flag, so speak() scales the samples before writing the file and
+    they all play at unity.
+    """
+    if IS_MAC:
+        return ["afplay", "-v", str(volume), wav]
+    for cand in (
+        ["pw-play", wav],
+        ["paplay", wav],
+        ["aplay", "-q", wav],
+        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", wav],
+    ):
+        if shutil.which(cand[0]):
+            return cand
+    return None
+
+
+def stop_playback():
+    """Cut whatever is being spoken right now (an explicit ask preempts it)."""
+    try:
+        with open(PLAYER_PID) as f:
+            pid = int(f.read().strip() or 0)
+        if pid > 0:
+            os.kill(pid, signal.SIGTERM)
+    except (OSError, ValueError):
+        pass
+    if IS_MAC:
+        _run(["killall", "afplay"])
+
+
+def speak(text, cfg, meta=None, announce=True):
     import soundfile as sf
     from kokoro_onnx import Kokoro
 
     kokoro = Kokoro(MODEL_ONNX, VOICES_BIN)
     samples, sr = kokoro.create(text, voice=cfg["voice"], speed=cfg["speed"])
+    volume = float(cfg.get("volume", 0.7))
+    if not IS_MAC:
+        samples = samples * max(0.0, min(1.0, volume))
+    os.makedirs(SPOOL, exist_ok=True)
     wav = os.path.join(SPOOL, f"say-{time.time_ns()}.wav")
     sf.write(wav, samples, sr)
     duration = len(samples) / float(sr)
+
+    player = player_command(wav, volume)
+    if player is None:
+        print(f"[{time.strftime('%H:%M:%S')}] no audio player found (pw-play, paplay, aplay, ffplay)", flush=True)
+        try:
+            os.unlink(wav)
+        except FileNotFoundError:
+            pass
+        return
 
     # Serialize playback across concurrent sessions (stale locks expire).
     waited = 0
@@ -267,34 +414,40 @@ def speak(text, cfg, meta=None):
             time.sleep(0.5)
             waited += 0.5
     # Duck: pause whatever the user is listening to, speak, then resume it.
-    ducked = other_audio_playing()
+    ducked = duck_begin()
     if ducked:
-        _media("pause")
         time.sleep(0.4)
     # The pill blooms open on this event, timed with the first spoken word.
-    pill_event({
-        "type": "briefing", "t": time.time(), "text": text,
-        "duration": duration, "silent": False,
-        "sid": (meta or {}).get("sid", ""), "repo": (meta or {}).get("repo", ""),
-    })
+    if announce:
+        pill_event({
+            "type": "briefing", "t": time.time(), "text": text,
+            "duration": duration, "silent": False,
+            "sid": (meta or {}).get("sid", ""), "repo": (meta or {}).get("repo", ""),
+        })
     try:
-        subprocess.run(["afplay", "-v", str(cfg["volume"]), wav], timeout=180)
+        proc = subprocess.Popen(player, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            with open(PLAYER_PID, "w") as f:
+                f.write(str(proc.pid))
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=180)
+        except subprocess.TimeoutExpired:
+            proc.kill()
         stamp = {"t": time.time()}
         if meta:
             stamp.update(meta)
         with open(SPOKE_STAMP, "w") as f:
             f.write(json.dumps(stamp))
     finally:
-        if ducked:
-            _media("play")
-        try:
-            os.unlink(LOCK)
-        except FileNotFoundError:
-            pass
-        try:
-            os.unlink(wav)
-        except FileNotFoundError:
-            pass
+        duck_end(ducked)
+        for p in (LOCK, PLAYER_PID, wav):
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
 
 
 def main():

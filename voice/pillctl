@@ -1,21 +1,31 @@
 #!/bin/bash
-# Voice control CLI. Alias it to your assistant's name in ~/.zshrc.
-# Self-locating: works from wherever cc-pill is installed.
+# Voice control CLI. Alias it to your assistant's name in your shell rc.
+# Self-locating: works from wherever cc-pill is installed, on macOS and Linux.
 V="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 CFG="$HOME/.cc-pill/config.json"
 LOG="$V/spool/voice.log"
+PY="$V/.venv/bin/python"
 
 set_cfg() {  # set_cfg <jq-filter>
   tmp=$(mktemp) && jq "$1" "$CFG" > "$tmp" && mv "$tmp" "$CFG"
 }
 
-speak() { "$V/.venv/bin/python" "$V/say.py" "$*" & }
+speak() { "$PY" "$V/say.py" "$*" & }
+stop_speech() { "$PY" "$V/say.py" --stop 2>/dev/null; }
+mute_cue() {
+  # A short system sound where one is handy; silence is fine elsewhere.
+  if [ "$(uname -s)" = "Darwin" ]; then
+    afplay -v 0.5 /System/Library/Sounds/Bottle.aiff &
+  elif command -v canberra-gtk-play >/dev/null; then
+    canberra-gtk-play -i audio-volume-change >/dev/null 2>&1 &
+  fi
+}
 
 case "$1" in
   off|mute)
     touch "$V/.off"
-    killall afplay 2>/dev/null
-    afplay -v 0.5 /System/Library/Sounds/Bottle.aiff &
+    stop_speech
+    mute_cue
     echo "voice: muted" ;;
   on|unmute)
     rm -f "$V/.off"
@@ -24,7 +34,7 @@ case "$1" in
   toggle)
     if [ -e "$V/.off" ]; then "$0" on; else "$0" off; fi ;;
   stop|shh)
-    killall afplay 2>/dev/null
+    stop_speech
     echo "voice: stopped current playback" ;;
   last|again)
     line=$(grep -E '^\[[0-9:]+\] stop: ' "$LOG" 2>/dev/null | grep -Fv '(skipped)' | tail -1 | sed -E 's/^\[[0-9:]+\] stop: //')

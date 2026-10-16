@@ -1,0 +1,52 @@
+#!/bin/bash
+# Ask mode for Linux: a small dialog, then the prompt goes to the daemon,
+# which starts a hands-free Claude session and briefs you when it's done.
+# Bound to a global shortcut by linux/setup.sh (default Meta+Alt+M).
+set -u
+
+CFG="$HOME/.cc-pill/config.json"
+IFS=$'\t' read -r PORT NAME < <(python3 - "$CFG" <<'PYEOF'
+import json, sys
+cfg = {}
+try:
+    cfg = json.load(open(sys.argv[1]))
+except Exception:
+    pass
+port = cfg.get("daemon_port", 17357)
+name = str(cfg.get("name") or "Jarvis").replace("\t", " ")
+print(f"{port if isinstance(port, int) else 17357}\t{name}")
+PYEOF
+)
+PORT="${PORT:-17357}"; NAME="${NAME:-Jarvis}"
+
+if command -v kdialog >/dev/null; then
+  TEXT=$(kdialog --title "cc-pill" --inputbox "Ask $NAME for something" "") || exit 0
+elif command -v zenity >/dev/null; then
+  TEXT=$(zenity --entry --title "cc-pill" --text "Ask $NAME for something") || exit 0
+else
+  printf "ask %s: " "$NAME"; read -r TEXT
+fi
+[ -n "${TEXT// /}" ] || exit 0
+
+if ! python3 - "$PORT" "$TEXT" <<'PYEOF'
+import json, sys, urllib.request
+port, text = int(sys.argv[1]), sys.argv[2]
+req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/ask", method="POST",
+    data=json.dumps({"text": text}).encode(),
+    headers={"Content-Type": "application/json", "X-CC-Pill": "1"})
+try:
+    with urllib.request.urlopen(req, timeout=5) as r:
+        sys.exit(0 if json.load(r).get("ok") else 1)
+except Exception as e:
+    print(e, file=sys.stderr)
+    sys.exit(1)
+PYEOF
+then
+  if command -v kdialog >/dev/null; then
+    kdialog --title "cc-pill" --passivepopup "The pill daemon isn't running (systemctl --user status cc-pill)" 5
+  else
+    echo "cc-pill: daemon not reachable on port $PORT" >&2
+  fi
+  exit 1
+fi

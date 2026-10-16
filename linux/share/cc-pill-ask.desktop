@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=cc-pill: Ask
+Comment=Start a hands-free Claude Code session from a prompt
+Exec=__INSTALL__/linux/bin/ccpill-ask
+Icon=utilities-terminal
+Terminal=false
+NoDisplay=true
+StartupNotify=false
+Categories=Utility;
+X-KDE-Shortcuts=__SHORTCUT__

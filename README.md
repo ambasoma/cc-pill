@@ -14,6 +14,7 @@ A Dynamic Island style pill floats over your macOS menu bar showing every Claude
 *Built for people who run Claude Code while doing other things.*
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)
+![KDE Plasma 6](https://img.shields.io/badge/KDE%20Plasma-6-1D99F3?logo=kde&logoColor=white)
 ![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-8e44ad)
 ![Swift](https://img.shields.io/badge/Swift-no%20Xcode%20needed-F05138?logo=swift&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-b8860b)
@@ -100,6 +101,18 @@ It then builds the app, installs a launchd agent (starts at login, auto-restarts
 
 > [!NOTE]
 > No Xcode project, no code signing, no accounts. Everything runs locally; the only network calls are your own Claude Code sessions and the one-time voice model download (~350MB, only if you enable the voice).
+
+## Linux (KDE Plasma)
+
+The same pill lives in a Plasma 6 panel: sessions, cats, paw, briefings and the card, with the voice playing through PipeWire and ducking your music over MPRIS. Ask mode is a <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> prompt box.
+
+```sh
+git clone https://github.com/ambasoma/cc-pill
+cd cc-pill
+./linux/setup.sh
+```
+
+Then add the **cc-pill** widget to a panel. Details, requirements and the daemon's API: [linux/README.md](linux/README.md).
 
 ## Controls
 

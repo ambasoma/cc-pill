@@ -1,0 +1,28 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Id": "com.ccpill.pill",
+        "Name": "cc-pill",
+        "Description": "A living panel widget for Claude Code: every session at a glance, cats that run while Claude works, a paw when it needs you, and spoken briefings.",
+        "Icon": "utilities-terminal",
+        "Category": "System Information",
+        "Authors": [
+            {
+                "Name": "ambasoma",
+                "Email": ""
+            }
+        ],
+        "License": "MIT",
+        "Version": "1.0",
+        "Website": "https://github.com/ambasoma/cc-pill",
+        "FormFactors": [
+            "desktop",
+            "handset",
+            "tablet"
+        ]
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-Provides": [
+        "org.kde.plasma.systemmonitor"
+    ]
+}

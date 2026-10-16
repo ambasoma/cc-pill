@@ -1,0 +1,14 @@
+[Unit]
+Description=cc-pill daemon (Claude Code session island)
+Documentation=https://github.com/ambasoma/cc-pill
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 __INSTALL__/linux/daemon/ccpilld.py
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
