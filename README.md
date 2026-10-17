@@ -1,202 +1,257 @@
 <div align="center">
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/hero-night.png">
-  <img src="docs/hero-day.png" alt="The cc-pill island narrating a working Claude Code session while a tiny cat runs across it" width="240">
-</picture>
+<img src="linux/docs/panel-full.png" alt="A KDE Plasma top panel with the cc-pill widget centred between the pager and the system tray, narrating a working Claude Code session" width="100%">
 
-# cc-pill
+# cc-pill for KDE Plasma
 
-**A living menu bar for [Claude Code](https://claude.com/claude-code).**
+**A living panel widget for [Claude Code](https://claude.com/claude-code).**
 
-A Dynamic Island style pill floats over your macOS menu bar showing every Claude Code session on the machine. Two tiny cats take laps while Claude works, a paw taps the screen when Claude needs you, and a local neural voice speaks a short, personality-driven briefing when each turn finishes. Press a hotkey, ask for something in plain language, and a hands-free session spins up in the background and reports back out loud.
+Every Claude Code session on the machine at a glance, in your Plasma panel, in your panel's own font and colours. Live narration of what Claude is doing, an amber "needs you" when it wants permission, and a local neural voice that briefs you in one to three sentences when each turn finishes, blooming the words off the panel as it speaks. Press a hotkey, ask for something in plain language, and a hands-free session spins up in the background and reports back out loud.
 
 *Built for people who run Claude Code while doing other things.*
 
-![macOS 14+](https://img.shields.io/badge/macOS-14%2B-000000?logo=apple&logoColor=white)
 ![KDE Plasma 6](https://img.shields.io/badge/KDE%20Plasma-6-1D99F3?logo=kde&logoColor=white)
-![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-arm64-8e44ad)
-![Swift](https://img.shields.io/badge/Swift-no%20Xcode%20needed-F05138?logo=swift&logoColor=white)
+![Wayland and X11](https://img.shields.io/badge/Wayland-%26%20X11-2d8a4e)
+![Python](https://img.shields.io/badge/Python-3.9%2B%2C%20stdlib%20daemon-3776AB?logo=python&logoColor=white)
+![QML](https://img.shields.io/badge/widget-QML%20only-41CD52?logo=qt&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-b8860b)
+
+*Looking for the macOS version? It lives on the [`main`](https://github.com/ambasoma/cc-pill/tree/main) branch.*
 
 </div>
 
 ---
 
-cc-pill grew out of running [Moon Kiln](https://moonkiln.com), my handmade clay store, with Claude Code: answering customers, managing orders, printing shipping labels, updating the storefront, planning the work in Linear. Sessions run all day while my hands are busy with clay, and I wanted to know what Claude was up to, and be asked for what it needs, without sitting at a screen. So: a pill that watches every session, cats that tell me at a glance that work is happening, and a voice that briefs me when something finishes.
+cc-pill grew out of running [Moon Kiln](https://moonkiln.com), my handmade clay store, with Claude Code: answering customers, managing orders, printing shipping labels, updating the storefront, planning the work in Linear. Sessions run all day while my hands are busy with clay, and I wanted to know what Claude was up to, and be asked for what it needs, without sitting at a screen. So: a widget that watches every session from the panel, a voice that briefs me when something finishes, and a hotkey to hand Claude the next job. It is a proper Plasma widget: it follows your colour scheme, sits wherever you put it on any panel, and keeps one width while the traces stream so the rest of your panel never shuffles.
 
-## The island
+## The pill
 
-The pill is hidden when nothing is running. Its appearance IS the signal. Porcelain by day, kiln by night, following your system appearance with a crossfade.
-
-<table align="center">
-  <tr>
-    <td align="center" width="33%">
-      <img src="docs/idle-day.png" alt="Idle pill, sun glyph and one dot per session" width="120"><br>
-      <sub><b>Resting.</b> Sun or moon, one dot per session. Slim enough to live inside the menu bar.</sub>
-    </td>
-    <td align="center" width="33%">
-      <img src="docs/working-day.png" alt="Working pill narrating: editing PillView.swift, with a cat running across" width="205"><br>
-      <sub><b>Working.</b> Live narration of what Claude is doing, and the cats take laps.</sub>
-    </td>
-    <td align="center" width="33%">
-      <img src="docs/needs-you.png" alt="Waiting pill: amber dot, needs you, a paw tapping from below" width="150"><br>
-      <sub><b>Needs you.</b> Amber ping, and a paw taps the screen from under the pill.</sub>
-    </td>
-  </tr>
-  <tr>
-    <td align="center">
-      <img src="docs/briefing-day.png" alt="Speaking bloom: words filling in, wave bars on the right" width="360"><br>
-      <sub><b>Briefing.</b> The pill blooms as the voice starts, words paced to the audio.</sub>
-    </td>
-    <td align="center">
-      <img src="docs/star-moment.png" alt="A cat sitting next to a gold star pop after a good turn" width="176"><br>
-      <sub><b>Turn-end moments.</b> A star pop for good news, an ears-back walk-off for failures.</sub>
-    </td>
-    <td align="center">
-      <img src="docs/working-night.png" alt="Night pill: dark kiln tones, crescent moon, ember glow, white cat" width="208"><br>
-      <sub><b>Night.</b> Kiln tones, crescent moon, and an ember breathing behind the cats.</sub>
-    </td>
-  </tr>
-</table>
-
-<div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/card-night.png">
-    <img src="docs/card.png" alt="The session card: two sessions with state, elapsed time, and replay, speak, terminal buttons" width="452">
-  </picture><br>
-  <sub><b>The card.</b> Hover the pill to peek, click to pin. One row per session with replay-briefing, speak-a-prompt, and open-terminal buttons.</sub>
-</div>
-
-## What it does
-
-- **Session island.** Every Claude Code session on the machine, keyed by real lifecycle hooks, with dead sessions reaped automatically. SSH sessions are tagged.
-- **Live narration.** While Claude works the pill alternates between the project name and what Claude is doing right now ("editing worker.py", "running the tests", "using GitHub"), with elapsed minutes on long turns.
-- **Needs-you paw.** Real permission prompts get the amber ping and the paw. Idle "waiting for input" nags are filtered out.
-- **Spoken briefings.** Your named assistant (default: Jarvis) speaks a 1-3 sentence summary when a turn ends. Never a transcript: code, paths, and IDs are described in plain speech, and the persona is yours to choose or generate. Local TTS ([Kokoro](https://github.com/thewh1teagle/kokoro-onnx)), summarized by Haiku through your existing Claude Code login. If your music is playing, it ducks, speaks, and resumes.
-- **Courtesy layer.** Silent (text-only bloom) when you are already looking at that session's terminal. Silent for SSH sessions. Re-orients you ("On the api work, ...") when the last briefing you heard was a while ago or from another project.
-- **Ask mode.** <kbd>⌥</kbd><kbd>⌘</kbd><kbd>M</kbd> anywhere: the pill becomes a prompt. Speak or type, hit <kbd>Enter</kbd>, and a detached Claude session starts in your configured directory (permission mode of your choosing, optional extra system instructions), works, and briefs you out loud when done. Idle pill-launched sessions are garbage collected after 30 minutes.
-
-## Install
-
-```sh
-git clone https://github.com/ambasoma/cc-pill
-cd cc-pill
-./setup.sh
-```
-
-Setup is a [gum](https://github.com/charmbracelet/gum) powered interactive TUI (with a plain prompt fallback). It asks where to install, which terminal you use, your ask-mode hotkey, how hands-free pill-launched sessions should be (auto-accept edits by default, fully hands-free or normal prompting if you prefer), and whether you want the voice. Saying yes to the voice adds the voice picker (with live previews), your assistant's name, its personality (presets, your own text, or described-and-generated by Haiku), and the summarizer model.
-
-It then builds the app, installs a launchd agent (starts at login, auto-restarts if killed), registers the Claude Code hooks globally, and optionally adds a tmux wrapper for your interactive sessions so the pill can talk to them.
-
-> [!TIP]
-> Not sure about the voice? Say no. The install stays small and silent, and `./setup.sh voice` adds the whole voice system any time later.
-
-### Requirements
-
-- macOS 14+ on Apple Silicon
-- [Claude Code](https://claude.com/claude-code) installed and logged in
-- Xcode command line tools (`xcode-select --install`)
-- Homebrew (setup installs `tmux`, `jq`, and `gum`; `media-control` optional for audio ducking)
-
-> [!NOTE]
-> No Xcode project, no code signing, no accounts. Everything runs locally; the only network calls are your own Claude Code sessions and the one-time voice model download (~350MB, only if you enable the voice).
-
-## Linux (KDE Plasma)
-
-The same pill as a native Plasma 6 panel widget: it takes the panel's font and colour scheme, keeps one width while traces stream, and blooms the spoken briefing in a window hanging off the panel. The voice plays through PipeWire and ducks your music over MPRIS; ask mode is a <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> prompt box.
-
-<p align="center">
-  <img src="linux/docs/panel-full.png" alt="A Plasma top panel with the cc-pill widget centred between the pager and the system tray" width="100%">
-</p>
+The widget is the signal. One dot per session in the colour scheme's accent, neutral and positive colours; words in the panel's font.
 
 <table align="center">
   <tr>
     <td align="center">
-      <img src="linux/docs/panel-working.png" alt="Working: one dot per session and the current narration, in the panel's own font and colours" width="310"><br>
-      <sub><b>working</b> · the panel's font and colours, one dot per session</sub>
+      <img src="linux/docs/panel-working.png" alt="Working: one dot per session and the current narration" width="310"><br>
+      <sub><b>Working.</b> Live narration of what Claude is doing, in a fixed-width slot that never shoves its neighbours.</sub>
     </td>
     <td align="center">
       <img src="linux/docs/panel-needs-you.png" alt="Needs you: amber dot and the words needs you" width="310"><br>
-      <sub><b>needs you</b> · the colour scheme's neutral colour</sub>
+      <sub><b>Needs you.</b> A real permission prompt: the scheme's neutral colour and a pulsing dot.</sub>
     </td>
   </tr>
   <tr>
     <td align="center">
       <img src="linux/docs/bloom.png" alt="The briefing bloom: a window hanging under the panel with the whole spoken summary" width="380"><br>
-      <sub><b>briefing</b> · blooms off the panel, words lighting up with the voice</sub>
+      <sub><b>Briefing.</b> A window blooms off the panel as the voice starts; the words light up as they are spoken.</sub>
     </td>
     <td align="center">
-      <img src="linux/docs/card.png" alt="The session card with last briefings and replay, prompt, terminal buttons" width="380"><br>
-      <sub><b>the card</b> · click, or hover for a peek that takes no focus</sub>
+      <img src="linux/docs/idle-dot.png" alt="No sessions: a single faint dot" width="310"><br>
+      <sub><b>No sessions.</b> A faint dot keeps the widget findable and clickable (or hide it entirely).</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="linux/docs/card.png" alt="The session card: rows with state, last briefing and replay, prompt, terminal buttons" width="380"><br>
+      <sub><b>The card.</b> Click the pill: one row per session, its last briefing, replay, send-a-prompt and open-terminal buttons, <code>+ NEW</code>, mute.</sub>
+    </td>
+    <td align="center">
+      <img src="linux/docs/peek.png" alt="The peek: the same card in a no-focus window on hover" width="380"><br>
+      <sub><b>The peek.</b> Hover (optional): the same card in a window that takes no keyboard focus, so it never interrupts typing.</sub>
     </td>
   </tr>
   <tr>
     <td align="center">
       <img src="linux/docs/look-porcelain.png" alt="Porcelain look: cream capsule, sun glyph" width="310"><br>
-      <sub><b>porcelain</b> · the macOS look, one setting away</sub>
+      <sub><b>Porcelain.</b> cc-pill's original look (cream by day, kiln at night, sun and moon, tapping paw), one setting away.</sub>
     </td>
     <td align="center">
-      <img src="linux/docs/settings-appearance.png" alt="Appearance settings: look, briefing, font, colours, capsule, border" width="310"><br>
-      <sub><b>settings</b> · placement, font, colours, borders, activation</sub>
+      <img src="linux/docs/look-custom.png" alt="Custom look: dark capsule, violet border, serif bold italic" width="310"><br>
+      <sub><b>Custom.</b> Your own font, colours, capsule, border and corner radius.</sub>
     </td>
   </tr>
 </table>
 
+## What it does
+
+- **Every session.** Keyed by Claude Code's real lifecycle hooks, dead sessions reaped automatically, SSH sessions tagged. One dot each.
+- **Live narration.** While Claude works the pill alternates between the project name and what Claude is doing right now ("editing worker.py", "running the tests", "using GitHub"), with elapsed minutes on long turns.
+- **Needs you.** Real permission prompts get the amber ping. Idle "waiting for input" nags are filtered out.
+- **Spoken briefings.** Your named assistant (default: Jarvis) speaks a 1-3 sentence summary when a turn ends. Never a transcript: code, paths and IDs are described in plain speech, and the persona is yours to choose or generate. Local TTS ([Kokoro](https://github.com/thewh1teagle/kokoro-onnx)), summarized by Haiku through your existing Claude Code login. Plays through PipeWire or PulseAudio; if your music is playing it ducks over MPRIS, speaks, and resumes.
+- **The bloom.** The briefing hangs off the panel in a window that takes no focus, words paced to the audio, gone a few seconds after the voice stops. Or widen the pill to fit it, or crawl it through the slot.
+- **Courtesy layer.** Silent (text-only bloom) when you are already looking at that session's terminal. Silent for SSH sessions. Re-orients you ("On the api work, ...") when the last briefing you heard was a while ago or from another project.
+- **Ask mode.** <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> anywhere: a prompt box. Hit <kbd>Enter</kbd> and a detached Claude session starts in your configured directory (permission mode of your choosing, optional extra system instructions), works, and briefs you out loud when done. Idle pill-launched sessions are garbage collected after 30 minutes.
+- **Native and configurable.** Panel font and colour scheme by default; every colour, the font, capsule, border, corners, hit area, hover behaviour and placement are yours to change.
+
+## Install
+
 ```sh
-git clone https://github.com/ambasoma/cc-pill
+git clone -b linux-kde https://github.com/ambasoma/cc-pill
 cd cc-pill
 ./linux/setup.sh
 ```
 
-Setup asks where on which panel the pill should live and puts it there. Details, settings, requirements and the daemon's API: [linux/README.md](linux/README.md).
+Setup is a [gum](https://github.com/charmbracelet/gum) powered interactive TUI (with a plain prompt fallback). It asks where to install, which terminal you use, your ask-mode hotkey, how hands-free pill-launched sessions should be (auto-accept edits by default, fully hands-free or normal prompting if you prefer), whether you want the voice, and where on which panel the pill should live. Saying yes to the voice adds the voice picker (with live previews), your assistant's name, its personality (presets, your own text, or described-and-generated by Haiku), and the summarizer model.
+
+It then installs the daemon as a systemd user service (starts at login, auto-restarts), installs the widget, places it on the panel you chose, registers the Claude Code hooks globally and the KDE global shortcut, and optionally adds a tmux wrapper for your interactive sessions so the pill can talk to them.
+
+> [!TIP]
+> Not sure about the voice? Say no. The install stays small and silent, and `./linux/setup.sh voice` adds the whole voice system any time later.
+
+### Requirements
+
+- **KDE Plasma 6** (Wayland or X11), with `kpackagetool6`
+- [Claude Code](https://claude.com/claude-code) installed and logged in
+- `python3` (3.9+, with the `venv` module), `tmux`, `jq`, `systemd` user sessions
+- Audio for the voice: PipeWire (`pw-play`) or PulseAudio (`paplay`), or ALSA (`aplay`)
+
+Optional, each one unlocks a courtesy:
+
+| Tool | What it adds | Install |
+| --- | --- | --- |
+| [gum](https://github.com/charmbracelet/gum) | The setup TUI (plain prompts otherwise) | charm repo / `pacman -S gum` |
+| `kdialog` | The ask-mode prompt box (falls back to `zenity`) | `kdialog` package |
+| `playerctl` | Ducks your music while the voice speaks (MPRIS) | `playerctl` package |
+| [kdotool](https://github.com/jinliu/kdotool) | Stays silent when that session's terminal is already focused; raises terminals from the card | from source |
+
+> [!NOTE]
+> No accounts, no cloud. Everything runs locally; the only network calls are your own Claude Code sessions and the one-time voice model download (~310 MB, only if you enable the voice). The daemon listens on 127.0.0.1 only and refuses requests from browsers.
 
 ## Controls
 
 | Control | What it does |
 | --- | --- |
-| Your chosen hotkey (default <kbd>⌥</kbd><kbd>⌘</kbd><kbd>M</kbd>) | Ask mode: start a new session by voice or text. Press again to send, <kbd>Esc</kbd> to cancel. |
-| Hover the pill | Peek the session card; click to pin it open. |
+| <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> (your choice) | Ask mode: a prompt box; <kbd>Enter</kbd> starts a detached session that is tracked and briefed. |
+| Click the pill | The card: one row per session with its last briefing and replay-briefing, send-a-prompt and open-terminal buttons, `+ NEW`, and the mute toggle. |
+| Hover the pill | Tooltip with the session summary, or with *peek on hover* the card itself in a no-focus window. |
+| <kbd>Enter</kbd> / <kbd>Space</kbd> on the focused widget | Opens the card (the panel can focus widgets from the keyboard). |
 | `<yourname>` in the shell | Alias created by setup: `mute`, `on`, `stop`, `last` (replay briefing), `say <text>`, `voice <name>`, `vol`, `speed`. |
 
+## Settings
+
+Right-click the widget → *Configure…*
+
+<p align="center">
+  <img src="linux/docs/settings-general.png" alt="General settings: text width, activation, idle dot, daemon port, cats" width="32%">
+  <img src="linux/docs/settings-appearance.png" alt="Appearance settings: look, briefing, font, colours, capsule, border" width="32%">
+  <img src="linux/docs/settings-placement.png" alt="Placement settings: panel edge, position, Move button" width="32%">
+</p>
+
+- **General**: the text width (the widget keeps this many characters while sessions run; longer text glides inside it); activation (a click opens the card; optionally a pointer resting on the widget for a delay you set opens a *peek*, the card in a window that takes no keyboard focus; extra hit area around the pill); whether a faint dot stays when there are no sessions; the daemon port; the cats (Charlie and Lily run laps while Claude works, off by default).
+- **Appearance**: the look (**Plasma**, or **Porcelain**: cc-pill's original capsule); how a briefing shows (bloom window, widen the pill, crawl in the slot); the font (the panel's, or any family, size, weight and italic from a font dialog); the colours (follow the scheme, or custom text, accent, needs-you, done, capsule fill and border colours); a tinted capsule behind the words; the border width and the corner radius.
+- **Placement**: a panel edge (top, bottom, left, right) and a position (left, centre between two spacers, right before the system tray), then *Move*. Plasma's own way always works too: right-click a panel → *Enter Edit Mode* and drag the widget anywhere.
+
+Switching the Plasma colour scheme restyles the widget instantly. A vertical panel shows the dots only; the words and the card are a click away.
+
+<details>
+<summary><b>How placement works</b></summary>
+<br>
+
+Setup's placement question and the Placement page both run `linux/bin/cc-pill-place`:
+
+```sh
+linux/bin/cc-pill-place --edge top --align center      # also: bottom/left/right, start/end
+linux/bin/cc-pill-place --status
+```
+
+It drives plasmashell over D-Bus: a new pill is added to the chosen panel (a panel is created at that edge if there is none, and removed again when the pill leaves it), your settings are copied over, the old pill goes away, and "centre" brackets the pill with two spacers. Plasma reads a panel's widget order only at startup, so when the pill has to go anywhere but the end of the panel the shell restarts for a couple of seconds.
+
+A panel that also holds an expanding task manager shares its free space with the spacers, so a true centre needs the task manager on another panel or the pill next to the clock instead.
+
+</details>
+
 ## How it works
+
+Two small parts, so any desktop could render the same state:
 
 ```mermaid
 flowchart LR
     S["every Claude Code session<br/>(any repo, any terminal)"] -- "global hooks" --> E[("~/.cc-pill/events/")]
-    E --> P["Pill.app<br/>fixed panel above the menu bar,<br/>per-pixel mouse pass-through"]
+    E --> D["ccpilld (python, systemd --user)<br/>sessions · narration · moments · GC"]
+    D -- "127.0.0.1:17357" --> W["Plasma widget<br/>pill in the panel, bloom, card"]
+    D --> J[("~/.cc-pill/state.json")]
     S -- "turn ends" --> H["Haiku rewrites the final<br/>message as a spoken line"]
-    H --> K["Kokoro TTS<br/>(local, on-device)"]
-    K -- "bloom synced to audio" --> P
-    P -- "ask mode" --> T["detached tmux session<br/>running claude"]
+    H --> K["Kokoro TTS<br/>(local, on-device) → pw-play"]
+    K -- "briefing event, bloom synced to audio" --> E
+    A["hotkey (kdialog)"] -- "POST /ask" --> D
+    D -- "tmux" --> T["detached claude session"]
     T --> S
 ```
 
-Hooks write tiny JSON events, the app watches the directory and animates, and the voice worker turns final messages into speech. Ask mode spawns claude in a detached tmux session and delivers your prompt once the TUI is ready; from there it is tracked like any other session.
+- **`linux/daemon/ccpilld.py`** is the brain: a one-for-one port of the Swift `Store` (session states, needs-you filtering, narration cadence, bloom timing, star and sad moments, dead-process reaping, idle pill-session GC). Stdlib only. Runs as the `cc-pill.service` user unit.
+- **`linux/plasmoid/com.ccpill.pill`** is the renderer: a QML-only Plasma 6 applet. The compact representation is the pill, the full representation is the card, and two tooltip-type windows hold the bloom and the peek. It polls the daemon twice a second and draws everything from that state.
+- **`voice/`** is the voice worker: Haiku summary, Kokoro synthesis, `pw-play`/`paplay`/`aplay` playback, `playerctl` ducking, `kdotool` for the on-screen courtesy.
+- **`linux/bin/ccpill-ask`** is ask mode: a `kdialog` box bound to a KDE global shortcut, posting to the daemon. **`linux/bin/cc-pill-place`** moves the widget between panels.
+
+<details>
+<summary><b>The daemon's API</b></summary>
+<br>
+
+Localhost only. Every request must carry the header `X-CC-Pill: 1`, and any request with an `Origin` header is refused, so a web page in your browser cannot drive the pill.
+
+| Route | Body | Does |
+| --- | --- | --- |
+| `GET /state` | | The whole renderer state: `pill`, `sessions`, `briefing`, `moment`, `voice`, `toast`, daemon clock `t` |
+| `POST /ask` | `{"text"}` | Start a hands-free session in `home_repo` with the prompt |
+| `POST /recap` | `{"sid"}` | Replay that session's last briefing |
+| `POST /prompt` | `{"sid","text"}` | Type a prompt into that session's tmux pane |
+| `POST /terminal` | `{"sid"}` | Switch/raise/open the terminal for that session |
+| `POST /mute` | | Toggle the voice, returns `{"muted"}` |
+| `POST /stop` | | Cut the current speech |
+| `POST /place` | `{"edge","align"}` | Move the widget (runs `cc-pill-place` detached) |
+
+```sh
+curl -s -H 'X-CC-Pill: 1' localhost:17357/state | jq .pill
+```
+
+The same state is mirrored to `~/.cc-pill/state.json` on every change, for status bars and scripts that would rather read a file.
+
+</details>
 
 <details>
 <summary><b>Configuration reference</b> (<code>~/.cc-pill/config.json</code>)</summary>
 <br>
 
-Setup writes this for you; edit and the app picks it up on restart.
+Setup writes this for you; edit and restart the daemon (`systemctl --user restart cc-pill`) to pick it up.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `name` | `"Jarvis"` | Your assistant's name (spoken, shown in the card, shell alias). |
 | `home_repo` | your home | Directory ask-mode sessions start in. |
 | `permission_mode` | `"acceptEdits"` | How pill-launched sessions run: `acceptEdits` (file edits auto-approved), `bypass` (fully hands-free), `default` (normal prompting). |
-| `terminal` | detected | Bundle id of the terminal the card's open-terminal button focuses. |
-| `hotkey` | `"cmd+alt+m"` | Ask-mode hotkey. |
+| `terminal` | `konsole` | Terminal command for the card's open-terminal button (`konsole`, `kitty`, `alacritty`, `wezterm`, `ghostty`, `foot`, `gnome-terminal`, `xterm`, or any command that takes `-e`). |
+| `daemon_port` | `17357` | Port the daemon binds on 127.0.0.1. Change the widget's port in its settings to match. |
+| `hotkey` | `"meta+alt+m"` | Ask-mode shortcut (written to KDE global shortcuts by setup). |
 | `pill_gc_minutes` | `30` | Minutes before an idle pill-launched session is collected (`0` disables). |
 | `pill_system_prompt` | `""` | Extra system instructions appended to pill-launched sessions. |
-| `font` | system | Display font family for the island's labels (e.g. `"Grandstander"`). The family's -Regular/-Medium/-SemiBold/-Bold faces must be installed. |
-| `font_body` | falls back to `font` | Font family for reading text (briefings, card detail, prompt fields). |
 | `enabled` | | Voice on/off (what `mute`/`on` toggle). |
 | `voice`, `speed`, `volume` | | Kokoro voice and delivery. |
 | `summarizer_model` | `haiku` | Model that writes the spoken line. |
 | `claude_bin` | auto | Path to the `claude` binary if not on the default PATH. |
 
-Logs live at `~/.cc-pill/pill.log` (the app narrates everything it does) and `voice/spool/voice.log`.
+The widget's own settings (look, font, colours, placement, activation) live in Plasma's applet config, through the widget's *Configure…* dialog.
+
+Logs live at `~/.cc-pill/pill.log` (the daemon narrates everything it does) and `voice/spool/voice.log`.
+
+</details>
+
+<details>
+<summary><b>Troubleshooting</b></summary>
+<br>
+
+```sh
+systemctl --user status cc-pill          # is the daemon up
+journalctl --user -u cc-pill -n 50        # its stderr
+tail -f ~/.cc-pill/pill.log               # every event it applied
+tail -f <install>/voice/spool/voice.log   # what the voice said, or why it stayed quiet
+```
+
+- **Widget shows only a faint dot.** No sessions yet. Start `claude` somewhere; the dot takes the session's colour. (Untick *No sessions: keep a faint dot* to hide it entirely.) If the tooltip says the daemon isn't running, see the service status above.
+- **Widget port mismatch.** Right-click the widget → Configure → Daemon port must equal `daemon_port` in the config.
+- **Card buttons do nothing for your own sessions.** Prompt-send and open-terminal need the session inside tmux: accept the tmux wrapper in setup, then open a new shell.
+- **No audio.** `pw-play`, `paplay` or `aplay` must be on the PATH of the voice worker (which runs from the Claude Code hook, in your login environment).
+- **Hotkey doesn't fire.** System Settings → Shortcuts → look for *cc-pill: Ask* and assign it there. Setup registers it through `kglobalshortcutsrc` and the `.desktop` file's `X-KDE-Shortcuts`; a fresh login always picks it up.
+- **Terminal doesn't come to the front.** Wayland lets only the compositor raise windows. Install `kdotool`; without it the daemon opens a new terminal window attached to the tmux session instead.
+- **After upgrading the widget**, restart the shell: `systemctl --user restart plasma-plasmashell`.
 
 </details>
 
@@ -205,33 +260,30 @@ Logs live at `~/.cc-pill/pill.log` (the app narrates everything it does) and `vo
 <br>
 
 ```sh
-launchctl bootout gui/$(id -u)/com.ccpill.pill
-rm -rf ~/.cc-pill ~/Library/LaunchAgents/com.ccpill.pill.plist
+systemctl --user disable --now cc-pill.service
+rm ~/.config/systemd/user/cc-pill.service
+kpackagetool6 --type Plasma/Applet --remove com.ccpill.pill
+rm ~/.local/share/applications/cc-pill-ask.desktop
+rm -rf ~/.cc-pill            # events, state, config, logs
 ```
 
-Then remove the cc-pill hooks block from `~/.claude/settings.json`, the wrapper/alias lines from `~/.zshrc`, and the install folder.
+Then remove the `cc-pill` hook entries from `~/.claude/settings.json` and, if you accepted it, the tmux wrapper line from your shell rc.
 
 </details>
 
-<details>
-<summary><b>Troubleshooting</b></summary>
-<br>
+## Not yet
 
-- **Pill never appears.** Check `~/.cc-pill/pill.log`. Then look at `~/.cc-pill/events/`: files piling up means the app is not running; nothing arriving means the hooks are not registered, or the session predates them (restart the session).
-- **No speech.** `~/.cc-pill/config.json` needs `"enabled": true` (the `on` alias sets it). Voice not installed? `./setup.sh voice`.
-- **Ask mode says it can't start a session.** The app needs `tmux` and `claude` reachable from launchd; set `claude_bin` in the config if claude lives somewhere unusual.
-- **Speak-a-prompt is a text field.** No microphone was detected, or speech permission was denied; the text fallback is intentional.
+- **No voice input in ask mode.** Ask mode is typed. A local speech-to-text model is a candidate for a later version.
+- **Verified so far** in a Plasma 6.6 session (Ubuntu 26.04, Frameworks 6.24, X11): every pill state and look, the bloom, the card and peek, placement on every edge, the settings pages, the systemd service, hooks and hotkey registration, and `linux/setup.sh` end to end. Not yet exercised on real hardware: the Wayland global shortcut, audio playback and ducking.
 
-</details>
+## Developing
+
+```sh
+python3 -m unittest discover linux/daemon/tests        # daemon, hook and placement tests (no tmux, no audio needed)
+CC_PILL_HOME=/tmp/pill python3 linux/daemon/ccpilld.py # run against a scratch data dir
+kpackagetool6 --type Plasma/Applet --upgrade linux/plasmoid/com.ccpill.pill && systemctl --user restart plasma-plasmashell
+```
 
 ## License
 
-MIT. The cats are named Charlie and Lily.
-
-<div align="center">
-  <br>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/idle-night.png">
-    <img src="docs/idle-day.png" alt="The resting pill" width="90">
-  </picture>
-</div>
+MIT
