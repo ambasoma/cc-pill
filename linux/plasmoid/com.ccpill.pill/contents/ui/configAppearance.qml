@@ -15,6 +15,7 @@ KCM.SimpleKCM {
 
     property string cfg_style
     property string cfg_colors
+    property string cfg_briefing
 
     property alias cfg_customFont: customFontRadio.checked
     property string cfg_fontFamily
@@ -69,6 +70,20 @@ KCM.SimpleKCM {
             ]
             Component.onCompleted: currentIndex = Math.max(0, indexOfValue(page.cfg_style))
             onActivated: page.cfg_style = currentValue
+        }
+
+        QQC2.ComboBox {
+            id: briefingCombo
+            Kirigami.FormData.label: "Briefing:"
+            textRole: "text"
+            valueRole: "value"
+            model: [
+                { text: "Bloom in a window hanging off the panel", value: "popup" },
+                { text: "Widen the pill to fit it (the Mac way)", value: "widen" },
+                { text: "Crawl inside the text slot", value: "slot" }
+            ]
+            Component.onCompleted: currentIndex = Math.max(0, indexOfValue(page.cfg_briefing))
+            onActivated: page.cfg_briefing = currentValue
         }
 
         Item { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Font" }

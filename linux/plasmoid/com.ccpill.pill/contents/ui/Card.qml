@@ -184,6 +184,19 @@ Item {
                     }
                 }
 
+                // the last briefing, so a summary that crawled past can be read later
+                PlasmaComponents3.Label {
+                    visible: !!row.modelData.last_briefing
+                    text: row.modelData.last_briefing || ""
+                    font: Kirigami.Theme.smallFont
+                    opacity: 0.75
+                    wrapMode: Text.WordWrap
+                    maximumLineCount: 3
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 8 + Kirigami.Units.smallSpacing
+                }
+
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 8 + Kirigami.Units.smallSpacing

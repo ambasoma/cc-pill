@@ -25,6 +25,10 @@ PlasmoidItem {
     readonly property bool openOnHover: Plasmoid.configuration.openOnHover
     readonly property int hoverDelay: Plasmoid.configuration.hoverDelay
     readonly property int hitPadding: Plasmoid.configuration.hitPadding
+    // "popup": the briefing blooms in a window hanging off the panel (the
+    // Mac bloom, outward instead of sideways); "widen": the pill grows to
+    // fit it; "slot": it crawls inside the fixed text slot.
+    readonly property string briefingMode: Plasmoid.configuration.briefing
     readonly property string base: "http://127.0.0.1:" + port
 
     property bool online: false
@@ -106,9 +110,12 @@ PlasmoidItem {
     preferredRepresentation: compactRepresentation
     hideOnWindowDeactivate: true
 
-    toolTipMainText: online ? (sessionCount === 0 ? "cc-pill" : sessionCount + (sessionCount === 1 ? " Claude session" : " Claude sessions"))
+    // no tooltip while the bloom hangs there: both texts empty disables it
+    toolTipMainText: showBloom ? ""
+                   : online ? (sessionCount === 0 ? "cc-pill" : sessionCount + (sessionCount === 1 ? " Claude session" : " Claude sessions"))
                             : "cc-pill daemon not running"
     toolTipSubText: {
+        if (showBloom) return ""
         if (!online) return "systemctl --user status cc-pill"
         if (sessionCount === 0) return "Waiting for a Claude Code session"
         const parts = []
@@ -187,6 +194,47 @@ PlasmoidItem {
             root.poll()
         }
         xhr.send(JSON.stringify(body || {}))
+    }
+
+    // ----------------------------------------------------------- briefing
+    // Words fill in as they are spoken: the first N bright, the rest faint.
+
+    readonly property var briefing: pillState === "speaking" ? pillData.briefing : null
+
+    readonly property real bloomProgress: {
+        if (!briefing || !(briefing.duration > 0)) return 0
+        // a little lead so the word being spoken sits inside view, not at its edge
+        return Math.min(1, Math.max(0, (elapsed(briefing.started) + 0.6) / briefing.duration))
+    }
+
+    function esc(w) {
+        return w.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    }
+
+    function bloomHtml(dim) {
+        const b = briefing
+        if (!b) return ""
+        const words = b.text.split(/\s+/).filter(w => w.length > 0)
+        let shown = words.length
+        if (!b.silent && b.duration > 0) {
+            shown = Math.min(words.length, Math.ceil(Math.min(1, elapsed(b.started) / b.duration) * words.length))
+        }
+        return words.map((w, i) => i < shown ? esc(w) : '<font color="' + dim + '">' + esc(w) + '</font>').join(" ")
+    }
+
+    readonly property bool showBloom: online && briefingMode === "popup" && briefing !== null
+                                      && !expanded && compactRepresentationItem !== null
+
+    // The bloom: a tooltip-type window (takes no focus) hanging off the pill
+    // on the far side of the panel, holding the whole briefing.
+    PlasmaCore.Dialog {
+        id: bloomDialog
+        type: PlasmaCore.Dialog.Tooltip
+        location: Plasmoid.location
+        visualParent: root.compactRepresentationItem
+        hideOnWindowDeactivate: false
+        visible: root.showBloom
+        mainItem: Bloom { ctl: root }
     }
 
     // ------------------------------------------------------------ helpers

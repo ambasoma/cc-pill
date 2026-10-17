@@ -78,39 +78,25 @@ Item {
         return Qt.rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1)
     }
 
-    function esc(w) {
-        return w.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    }
-
-    // Words fill in as they are spoken: the first N bright, the rest faint.
+    // Words fill in as they are spoken: the first N bright, the rest faint
+    // (the bloom itself lives in main.qml; this picks the faint colour).
     function bloomText() {
-        const b = briefing
-        if (!b || !theme) return ""
-        const words = b.text.split(/\s+/).filter(w => w.length > 0)
-        let shown = words.length
-        if (!b.silent && b.duration > 0) {
-            shown = Math.min(words.length, Math.ceil(Math.min(1, ctl.elapsed(b.started) / b.duration) * words.length))
-        }
+        if (!theme) return ""
         const dim = theme.nativeLook ? Qt.rgba(theme.ink.r, theme.ink.g, theme.ink.b, 0.35).toString()
                                  : blend(theme.bg, theme.ink, 0.2).toString()
-        return words.map((w, i) => i < shown ? esc(w) : '<font color="' + dim + '">' + esc(w) + '</font>').join(" ")
+        return ctl.bloomHtml(dim)
     }
 
     readonly property bool audioPlaying: briefing !== null && !briefing.silent
                                          && ctl.elapsed(briefing.started) < briefing.duration
-
-    // How far through the briefing we are, with a little lead so the word
-    // being spoken sits inside the slot rather than at its right edge.
-    readonly property real bloomProgress: {
-        if (!briefing || !(briefing.duration > 0)) return 0
-        return Math.min(1, Math.max(0, (ctl.elapsed(briefing.started) + 0.6) / briefing.duration))
-    }
+    readonly property real bloomProgress: ctl ? ctl.bloomProgress : 0
+    readonly property string briefingMode: ctl ? ctl.briefingMode : "popup"
 
     readonly property string labelText: {
         if (!pd) return ""
         if (st === "working") return pd.pill.narration || pd.pill.label
         if (st === "waiting") return "needs you"
-        if (st === "speaking") return bloomText()
+        if (st === "speaking") return briefingMode === "popup" ? ((briefing && briefing.repo) || "briefing") : bloomText()
         if (st === "idle") return sessions.length === 1 ? "done" : sessions.length + " done"
         if (st === "moment") return pd.moment && pd.moment.kind === "sad" ? "ran into trouble" : "done"
         return ""
@@ -259,8 +245,14 @@ Item {
                 id: slot
                 anchors.verticalCenter: parent.verticalCenter
                 visible: !pillRoot.compact && pillRoot.st !== "hidden"
-                readonly property bool speaking: pillRoot.st === "speaking"
-                width: pillRoot.slotW
+                // the bloom text is only in the slot for the "widen" and "slot"
+                // modes; "popup" shows the repo name here and blooms outward
+                readonly property bool speaking: pillRoot.st === "speaking" && pillRoot.briefingMode !== "popup"
+                // "widen": the Mac way, the pill grows to fit the briefing
+                TextMetrics { id: briefMetrics; font: pillRoot.speakFont; text: pillRoot.briefing ? pillRoot.briefing.text : "" }
+                width: slot.speaking && pillRoot.briefingMode === "widen"
+                       ? Math.max(pillRoot.slotW, Math.min(Math.ceil(briefMetrics.width) + 6, pillRoot.maxW - pillRoot.pillH * 3))
+                       : pillRoot.slotW
                 height: pillRoot.pillH
                 clip: true
 

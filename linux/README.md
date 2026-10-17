@@ -79,9 +79,19 @@ Switching the Plasma colour scheme restyles it instantly.
 
 The widget keeps one width while sessions run: the words live in a slot of a
 fixed number of characters (22 by default, adjustable in the widget settings).
-New text slides in the way the Mac pill swaps its narration, text wider than
-the slot glides sideways to show its tail, and a spoken briefing crawls in
-step with the voice. Neighbouring panel widgets never get shoved.
+New text slides in the way the Mac pill swaps its narration and text wider
+than the slot glides sideways to show its tail. Neighbouring panel widgets
+never get shoved.
+
+At the end of a turn the voice worker turns the session's last message into
+a one-to-three-sentence briefing (Haiku), speaks it, and the pill blooms: a
+small window hangs off the panel under the pill (above it for a bottom
+panel) with the whole briefing, words lighting up as they are spoken, and
+goes away a few seconds after the voice stops. It is a tooltip-type window,
+so it never takes keyboard focus from your terminal. The Appearance page can
+instead widen the pill to fit the briefing, as on the Mac, or crawl it
+through the text slot. The card keeps each session's last briefing under
+its row, and the play button speaks it again.
 
 Right-click the widget → *Configure…* for three pages:
 
@@ -89,7 +99,8 @@ Right-click the widget → *Configure…* for three pages:
   pointer rests on the widget for a delay you set; extra hit area around the
   pill); the daemon port; the cats (off by default).
 - **Appearance**: the look (**Plasma**, or **Porcelain**: the macOS cc-pill
-  pill, cream by day, kiln at night, sun and moon, tapping paw); the font (the
+  pill, cream by day, kiln at night, sun and moon, tapping paw); how a
+  briefing shows (bloom window, widen the pill, crawl in the slot); the font (the
   panel's, or any font, size, weight and italic from a font dialog); the
   colours (follow the scheme, or custom text, accent, needs-you, done,
   capsule fill and border colours); a tinted capsule behind the words; the

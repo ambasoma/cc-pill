@@ -28,6 +28,10 @@
       <label>Extra clickable space on each side of the pill, in pixels.</label>
       <default>0</default>
     </entry>
+    <entry name="briefing" type="String">
+      <label>How a spoken briefing shows: "popup" hangs a bloom off the panel, "widen" grows the pill to fit, "slot" crawls inside the text slot.</label>
+      <default>popup</default>
+    </entry>
     <entry name="showCats" type="Bool">
       <label>Let the cats (Charlie and Lily) run laps while Claude works.</label>
       <default>false</default>
