@@ -34,13 +34,20 @@ Item {
 
     readonly property bool nativeLook: theme ? theme.nativeLook : true
     readonly property real pillH: Math.max(16, Math.min(height - 2, 27))
+    // The words live in a slot of fixed width (ctl.slotChars average characters)
+    // so the panel never shuffles while traces stream; see SlideText.qml.
+    readonly property font labelFont: nativeLook ? Kirigami.Theme.defaultFont : porcelainFont
+    readonly property font porcelainFont: Qt.font({ pixelSize: Math.round(pillH * 0.42), weight: Font.Medium })
+    readonly property font speakFont: nativeLook ? Kirigami.Theme.defaultFont
+                                                 : Qt.font({ pixelSize: Math.round(pillH * 0.46), weight: Font.Medium })
+    TextMetrics { id: slotMetrics; font: pillRoot.labelFont; text: "n".repeat(pillRoot.ctl ? pillRoot.ctl.slotChars : 22) }
+    readonly property real slotW: Math.ceil(slotMetrics.width)
     readonly property real padH: nativeLook ? Kirigami.Units.smallSpacing * 1.5 : Math.round(pillH * 0.4)
     readonly property real maxW: 430
 
     readonly property real targetW: {
         if (st === "hidden") return 0
         if (compact) return pillH * 2.6
-        if (st === "idle" && !nativeLook) return 70
         return Math.min(maxW, content.implicitWidth + padH * 2)
     }
 
@@ -88,11 +95,20 @@ Item {
     readonly property bool audioPlaying: briefing !== null && !briefing.silent
                                          && ctl.elapsed(briefing.started) < briefing.duration
 
+    // How far through the briefing we are, with a little lead so the word
+    // being spoken sits inside the slot rather than at its right edge.
+    readonly property real bloomProgress: {
+        if (!briefing || !(briefing.duration > 0)) return 0
+        return Math.min(1, Math.max(0, (ctl.elapsed(briefing.started) + 0.6) / briefing.duration))
+    }
+
     readonly property string labelText: {
         if (!pd) return ""
         if (st === "working") return pd.pill.narration || pd.pill.label
         if (st === "waiting") return "needs you"
         if (st === "speaking") return bloomText()
+        if (st === "idle") return sessions.length === 1 ? "done" : sessions.length + " done"
+        if (st === "moment") return pd.moment && pd.moment.kind === "sad" ? "ran into trouble" : "done"
         return ""
     }
 
@@ -193,7 +209,9 @@ Item {
                 id: dots
                 spacing: Math.round(pillRoot.pillH * 0.16)
                 anchors.verticalCenter: parent.verticalCenter
-                visible: pillRoot.st !== "speaking" && pillRoot.st !== "moment" && pillRoot.sessions.length > 0
+                // stays through briefings so the widget's width never moves;
+                // the moment icon takes its place for a turn-end moment
+                visible: pillRoot.st !== "moment" && pillRoot.sessions.length > 0
                 Repeater {
                     model: pillRoot.sessions
                     delegate: Rectangle {
@@ -218,27 +236,72 @@ Item {
                 }
             }
 
-            // the words: narration, "needs you", or the briefing filling in
-            Text {
-                id: label
+            // turn-end moment without the cats: a plain Breeze check or warning
+            // where the dots were
+            Kirigami.Icon {
+                id: momentIcon
+                visible: pillRoot.moment !== null && !pillRoot.compact && !(pillRoot.ctl && pillRoot.ctl.showCats)
+                source: pillRoot.moment && pillRoot.moment.kind === "sad" ? "dialog-warning" : "checkmark"
+                color: pillRoot.theme ? (pillRoot.moment && pillRoot.moment.kind === "sad" ? pillRoot.theme.amber : pillRoot.theme.sage) : "gray"
+                isMask: true
+                width: Math.round(pillRoot.pillH * 0.6)
+                height: momentIcon.width
+                anchors.verticalCenter: content.verticalCenter
+            }
+
+            // the words: narration, "needs you", "done", or the briefing filling
+            // in. A fixed-width slot while sessions live; the briefing widens it.
+            Item {
+                id: slot
                 anchors.verticalCenter: parent.verticalCenter
-                visible: !pillRoot.compact && text.length > 0
-                text: pillRoot.labelText
-                textFormat: pillRoot.st === "speaking" ? Text.StyledText : Text.PlainText
-                // native look: the panel's text colour, attention colour while a session waits
-                color: !pillRoot.theme ? "black"
-                       : (pillRoot.nativeLook && pillRoot.st === "waiting") ? pillRoot.theme.amber : pillRoot.theme.ink
-                // native look: the panel font as-is; porcelain: sized to the pill
-                readonly property font porcelainFont: Qt.font({
-                    pixelSize: Math.round(pillRoot.pillH * (pillRoot.st === "speaking" ? 0.46 : 0.42)),
-                    weight: Font.Medium
-                })
-                font: pillRoot.nativeLook ? Kirigami.Theme.defaultFont : porcelainFont
-                elide: Text.ElideRight
-                maximumLineCount: 1
-                width: Math.min(metrics.width + 2, pillRoot.maxW - pillRoot.padH * 2 - (waves.visible ? waves.width + content.spacing : 0))
-                TextMetrics { id: metrics; font: label.font; text: label.text.replace(/<[^>]+>/g, "") }
-                Behavior on color { ColorAnimation { duration: 600 } }
+                visible: !pillRoot.compact && pillRoot.st !== "hidden"
+                readonly property bool speaking: pillRoot.st === "speaking"
+                width: pillRoot.slotW
+                height: pillRoot.pillH
+                clip: true
+
+                readonly property color ink: !pillRoot.theme ? "black"
+                    : (pillRoot.nativeLook && pillRoot.st === "waiting") ? pillRoot.theme.amber : pillRoot.theme.ink
+
+                SlideText { id: textA; slotWidth: slot.width; height: slot.height; verticalAlignment: Text.AlignVCenter
+                            crawl: slot.speaking ? pillRoot.bloomProgress : -1
+                            font: slot.speaking ? pillRoot.speakFont : pillRoot.labelFont; color: slot.ink
+                            textFormat: slot.speaking ? Text.StyledText : Text.PlainText
+                            Behavior on color { ColorAnimation { duration: 600 } } }
+                SlideText { id: textB; slotWidth: slot.width; height: slot.height; verticalAlignment: Text.AlignVCenter
+                            crawl: slot.speaking ? pillRoot.bloomProgress : -1
+                            font: slot.speaking ? pillRoot.speakFont : pillRoot.labelFont; color: slot.ink; opacity: 0
+                            textFormat: slot.speaking ? Text.StyledText : Text.PlainText
+                            Behavior on color { ColorAnimation { duration: 600 } } }
+
+                property Item front: textA
+                property Item back: textB
+
+                // Swap choreography, as on the Mac: the outgoing text slides down
+                // out of the slot while the incoming one fades in. Bloom updates
+                // while speaking just replace the text.
+                function swap(t) {
+                    if (slot.speaking || slot.front.text === "" || t === "") {
+                        leaveY.stop(); leaveO.stop(); arriveO.stop()
+                        slot.front.text = t; slot.front.y = 0; slot.front.opacity = 1
+                        slot.back.text = ""; slot.back.opacity = 0
+                        return
+                    }
+                    if (slot.front.text === t) return
+                    leaveY.stop(); leaveO.stop(); arriveO.stop()
+                    const f = slot.front, b = slot.back
+                    b.text = t; b.y = 0; b.opacity = 0
+                    slot.front = b; slot.back = f
+                    leaveY.target = f; leaveO.target = f; arriveO.target = b
+                    leaveY.start(); leaveO.start(); arriveO.start()
+                }
+                NumberAnimation { id: leaveY; property: "y"; to: slot.height; duration: 380; easing.type: Easing.OutCubic
+                                  onFinished: { if (leaveY.target) { leaveY.target.text = ""; leaveY.target.y = 0 } } }
+                NumberAnimation { id: leaveO; property: "opacity"; to: 0; duration: 220 }
+                NumberAnimation { id: arriveO; property: "opacity"; to: 1; duration: 240 }
+
+                Connections { target: pillRoot; function onLabelTextChanged() { slot.swap(pillRoot.labelText) } }
+                Component.onCompleted: swap(pillRoot.labelText)
             }
 
             // the paw, tapping from the right while a session needs you (porcelain)
@@ -252,12 +315,13 @@ Item {
             // wave bars while the voice is speaking
             Row {
                 id: waves
-                visible: pillRoot.st === "speaking" && pillRoot.audioPlaying
+                visible: pillRoot.st === "speaking" && pillRoot.audioPlaying && !pillRoot.nativeLook
                 spacing: 2
                 anchors.verticalCenter: parent.verticalCenter
                 Repeater {
                     model: 4
                     delegate: Rectangle {
+                        id: bar
                         required property int index
                         width: 2.5
                         radius: 1.25
@@ -267,22 +331,11 @@ Item {
                         SequentialAnimation on height {
                             running: waves.visible
                             loops: Animation.Infinite
-                            NumberAnimation { to: pillRoot.pillH * (0.38 + 0.12 * ((index * 7) % 3)); duration: 160 + index * 45; easing.type: Easing.InOutSine }
-                            NumberAnimation { to: 4; duration: 190 + index * 35; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: pillRoot.pillH * (0.38 + 0.12 * ((bar.index * 7) % 3)); duration: 160 + bar.index * 45; easing.type: Easing.InOutSine }
+                            NumberAnimation { to: 4; duration: 190 + bar.index * 35; easing.type: Easing.InOutSine }
                         }
                     }
                 }
-            }
-
-            // turn-end moment without the cats: a plain Breeze check or warning
-            Kirigami.Icon {
-                visible: pillRoot.moment !== null && !pillRoot.compact && !(pillRoot.ctl && pillRoot.ctl.showCats)
-                source: pillRoot.moment && pillRoot.moment.kind === "sad" ? "dialog-warning" : "checkmark"
-                color: pillRoot.theme ? (pillRoot.moment && pillRoot.moment.kind === "sad" ? pillRoot.theme.amber : pillRoot.theme.sage) : "gray"
-                isMask: true
-                width: Math.round(pillRoot.pillH * 0.6)
-                height: width
-                anchors.verticalCenter: parent.verticalCenter
             }
 
             // turn-end moment with the cats: one sits for a star, or walks off sad

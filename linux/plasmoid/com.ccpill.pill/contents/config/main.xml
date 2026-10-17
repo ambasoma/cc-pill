@@ -13,6 +13,10 @@
       <label>Look: "plasma" follows the Plasma colour scheme; "porcelain" is the macOS cc-pill look.</label>
       <default>plasma</default>
     </entry>
+    <entry name="slotChars" type="Int">
+      <label>Width of the text slot, in average characters. The panel keeps this width while sessions run.</label>
+      <default>22</default>
+    </entry>
     <entry name="showCats" type="Bool">
       <label>Let the cats (Charlie and Lily) run laps while Claude works.</label>
       <default>false</default>

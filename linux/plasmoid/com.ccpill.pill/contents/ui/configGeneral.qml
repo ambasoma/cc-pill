@@ -9,6 +9,7 @@ KCM.SimpleKCM {
 
     property alias cfg_port: portSpin.value
     property alias cfg_showCats: catsCheck.checked
+    property alias cfg_slotChars: slotSpin.value
     property string cfg_style
 
     Kirigami.FormLayout {
@@ -39,6 +40,23 @@ KCM.SimpleKCM {
 
         QQC2.Label {
             text: "Must match daemon_port in ~/.cc-pill/config.json (default 17357)."
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+
+        QQC2.SpinBox {
+            id: slotSpin
+            Kirigami.FormData.label: "Text width:"
+            from: 8
+            to: 60
+            textFromValue: function(value) { return value + " characters" }
+            valueFromText: function(text) { return parseInt(text, 10) || 22 }
+        }
+
+        QQC2.Label {
+            text: "The widget keeps this width while sessions run; longer text glides inside it."
             font: Kirigami.Theme.smallFont
             opacity: 0.7
             wrapMode: Text.WordWrap

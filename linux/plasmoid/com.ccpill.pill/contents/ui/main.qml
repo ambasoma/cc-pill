@@ -21,6 +21,7 @@ PlasmoidItem {
     // "plasma": follow the Plasma colour scheme, font and icons like any other
     // panel widget (default). "porcelain": the macOS cc-pill look.
     readonly property bool nativeLook: Plasmoid.configuration.style !== "porcelain"
+    readonly property int slotChars: Plasmoid.configuration.slotChars
     readonly property string base: "http://127.0.0.1:" + port
 
     property bool online: false

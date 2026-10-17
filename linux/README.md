@@ -77,9 +77,22 @@ colour (orange in Breeze) for a session that needs you, its "positive" colour
 for done, a Breeze check or warning at the end of a turn, and no capsule.
 Switching the Plasma colour scheme restyles it instantly.
 
-Right-click the widget → *Configure…* to pick **Porcelain** instead, the macOS
-cc-pill look (cream pill by day, kiln at night, sun and moon glyph, tapping
-paw), and to let the cats run laps while Claude works (off by default).
+The widget keeps one width while sessions run: the words live in a slot of a
+fixed number of characters (22 by default, adjustable in the widget settings).
+New text slides in the way the Mac pill swaps its narration, text wider than
+the slot glides sideways to show its tail, and a spoken briefing crawls in
+step with the voice. Neighbouring panel widgets never get shoved.
+
+To centre it like the Mac pill, put a *Panel Spacer* on each side of it
+(right-click the panel → Enter Edit Mode → Add Spacer, twice, then drag the
+widget between them). A panel that also holds an expanding task manager
+shares its free space with the spacers, so a true centre needs the task
+manager on another panel or the pill next to the clock instead.
+
+Right-click the widget → *Configure…* to change the text width, to pick
+**Porcelain** instead (the macOS cc-pill look: cream pill by day, kiln at
+night, sun and moon glyph, tapping paw), and to let the cats run laps while
+Claude works (off by default).
 
 ## Config
 
