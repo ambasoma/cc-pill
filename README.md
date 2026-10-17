@@ -96,16 +96,26 @@ It then installs the daemon as a systemd user service (starts at login, auto-res
 
 ### Arch Linux
 
-A small PKGBUILD lives in `linux/arch`: the daemon, the widget (system-wide, under `/usr/share/plasma/plasmoids`), the scripts and the systemd user unit, about 70 KB. The voice runtime stays optional and goes to `~/.cc-pill/voice` when you say yes to it.
+A PKGBUILD lives in `linux/arch` (`cc-pill-kde-git`, built from this branch). It is small on purpose: the daemon, the scripts and the hooks under `/usr/share/cc-pill`, the widget system-wide under `/usr/share/plasma/plasmoids`, a systemd user unit, the ask-mode launcher, and two commands, `cc-pill-setup` and `cc-pill-place`. About 60 KB packed, 213 KiB installed. No Python packages beyond the standard library.
 
 ```sh
 git clone -b linux-kde https://github.com/ambasoma/cc-pill
 cd cc-pill/linux/arch
-makepkg -si
-cc-pill-setup            # as your user: config, hooks, hotkey, placement, optional voice
+makepkg -si              # builds and installs with pacman, pulling the dependencies
+cc-pill-setup            # then, as your user: config, hooks, hotkey, placement, optional voice
 ```
 
-Later: `cc-pill-setup voice` adds the voice, and after a package upgrade `systemctl --user restart cc-pill plasma-plasmashell` reloads both halves.
+`cc-pill-setup` is the same setup as above in packaged mode: no install-location question, the widget and the unit are already in place, and if you say yes to the voice its venv and the Kokoro model go to `~/.cc-pill/voice` (the only part of the install that is not owned by pacman).
+
+| | |
+| --- | --- |
+| Dependencies | `plasma-workspace` `python` `tmux` `jq` `curl` `bash` |
+| Optional | `kdialog` (ask box; `zenity` works too), `gum` (setup TUI), `playerctl` (ducks your music), `pipewire-audio` (voice playback), [`kdotool`](https://aur.archlinux.org/packages/kdotool) from the AUR (silent when that terminal is on screen, raises terminals) |
+| Add the voice later | `cc-pill-setup voice` |
+| Upgrade | `makepkg -si` again in `linux/arch` (after `git pull`), then `systemctl --user restart cc-pill plasma-plasmashell` |
+| Remove | `pacman -R cc-pill-kde-git`; the post-remove note lists the per-user leftovers (`~/.cc-pill`, the hooks in `~/.claude/settings.json`) |
+
+Verified with `makepkg -s`, `namcap` and `pacman -U` against the Arch repositories (Arch Linux ARM, aarch64). The package is not on the AUR yet; `linux/arch` holds the `.SRCINFO` ready for it.
 
 > [!TIP]
 > Not sure about the voice? Say no. The install stays small and silent, and `./linux/setup.sh voice` (or `cc-pill-setup voice` from the package) adds the whole voice system any time later.
