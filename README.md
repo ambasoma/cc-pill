@@ -94,8 +94,21 @@ Setup is a [gum](https://github.com/charmbracelet/gum) powered interactive TUI (
 
 It then installs the daemon as a systemd user service (starts at login, auto-restarts), installs the widget, places it on the panel you chose, registers the Claude Code hooks globally and the KDE global shortcut, and optionally adds a tmux wrapper for your interactive sessions so the pill can talk to them.
 
+### Arch Linux
+
+A small PKGBUILD lives in `linux/arch`: the daemon, the widget (system-wide, under `/usr/share/plasma/plasmoids`), the scripts and the systemd user unit, about 70 KB. The voice runtime stays optional and goes to `~/.cc-pill/voice` when you say yes to it.
+
+```sh
+git clone -b linux-kde https://github.com/ambasoma/cc-pill
+cd cc-pill/linux/arch
+makepkg -si
+cc-pill-setup            # as your user: config, hooks, hotkey, placement, optional voice
+```
+
+Later: `cc-pill-setup voice` adds the voice, and after a package upgrade `systemctl --user restart cc-pill plasma-plasmashell` reloads both halves.
+
 > [!TIP]
-> Not sure about the voice? Say no. The install stays small and silent, and `./linux/setup.sh voice` adds the whole voice system any time later.
+> Not sure about the voice? Say no. The install stays small and silent, and `./linux/setup.sh voice` (or `cc-pill-setup voice` from the package) adds the whole voice system any time later.
 
 ### Requirements
 

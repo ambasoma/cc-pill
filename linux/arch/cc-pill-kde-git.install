@@ -1,0 +1,33 @@
+post_install() {
+  cat <<'EOF'
+cc-pill is installed. As your own user, run:
+
+    cc-pill-setup
+
+It writes ~/.cc-pill/config.json, registers the Claude Code hooks and the
+ask-mode shortcut, starts the daemon (systemctl --user enable --now
+cc-pill) and places the widget on a panel. Say yes to the voice there to
+download the Kokoro model into ~/.cc-pill/voice.
+EOF
+}
+
+post_upgrade() {
+  cat <<'EOF'
+cc-pill upgraded. Reload the widget and the daemon as your user:
+
+    systemctl --user restart cc-pill plasma-plasmashell
+
+Run cc-pill-setup again if the hooks or the voice need refreshing.
+EOF
+}
+
+post_remove() {
+  cat <<'EOF'
+cc-pill removed. Per-user leftovers, if you want them gone:
+
+    systemctl --user disable --now cc-pill
+    rm -rf ~/.cc-pill ~/.local/share/applications/cc-pill-ask.desktop
+
+and the cc-pill hook entries in ~/.claude/settings.json.
+EOF
+}

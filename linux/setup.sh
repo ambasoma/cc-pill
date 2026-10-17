@@ -94,9 +94,16 @@ ui_spin() {  # ui_spin "title" command...
 # ---------- platform guard ----------
 [ "$(uname -s)" = "Linux" ] || die "This is the Linux setup. On macOS run ./setup.sh from the repo root."
 
-REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# resolve symlinks: the package installs /usr/bin/cc-pill-setup -> /usr/share/cc-pill/linux/setup.sh
+REPO="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 DATA="$HOME/.cc-pill"
 MODE="${1:-full}"
+# Installed by a distro package (the AUR PKGBUILD puts the tree under
+# /usr/share/cc-pill, read-only): no install question, the widget and the
+# systemd unit are already in place, and the voice runtime (venv, models,
+# persona, spool) lives in ~/.cc-pill/voice with the scripts symlinked in.
+PACKAGED=0
+[ "$REPO" = "/usr/share/cc-pill" ] && PACKAGED=1
 SHELL_RC="$HOME/.bashrc"
 case "$(basename "${SHELL:-bash}")" in zsh) SHELL_RC="$HOME/.zshrc";; esac
 
@@ -124,10 +131,10 @@ json.dump(cfg, open(p, "w"), indent=2)
 PYEOF
 }
 
-register_hooks() {  # register_hooks <install> <voice_on: 1|0>
-  python3 - "$1" "$2" <<'PYEOF'
+register_hooks() {  # register_hooks <install> <voice_on: 1|0> <voice dir>
+  python3 - "$1" "$2" "$3" <<'PYEOF'
 import json, os, sys
-install, voice_on = sys.argv[1], sys.argv[2] == "1"
+install, voice_on, vdir = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
 p = os.path.expanduser("~/.claude/settings.json")
 os.makedirs(os.path.dirname(p), exist_ok=True)
 cfg = {}
@@ -135,7 +142,7 @@ try: cfg = json.load(open(p))
 except Exception: pass
 hooks = cfg.setdefault("hooks", {})
 pill = install + "/hooks/hook.py"
-voice = install + "/voice/hook.py"
+voice = vdir + "/hook.py"
 def cmd(script, mode): return {"type": "command", "command": f'python3 "{script}" {mode}', "timeout": 15}
 def entry(*cmds): return [{"hooks": list(cmds)}]
 hooks["SessionStart"] = entry(cmd(pill, "start"))
@@ -152,8 +159,21 @@ json.dump(cfg, open(p, "w"), indent=2)
 PYEOF
 }
 
-voice_runtime() {  # venv + models in $1/voice
-  cd "$1/voice"
+voice_dir() {  # voice_dir <install> -> the writable voice dir (venv, models, spool, persona)
+  if [ "$PACKAGED" = 1 ]; then
+    mkdir -p "$DATA/voice"
+    local f
+    for f in worker.py say.py hook.py pillctl prompt-template.txt; do
+      ln -sfn "$REPO/voice/$f" "$DATA/voice/$f"
+    done
+    echo "$DATA/voice"
+  else
+    echo "$1/voice"
+  fi
+}
+
+voice_runtime() {  # venv + models in <voice dir>
+  cd "$1"
   if [ ! -x .venv/bin/python ]; then
     python3 -m venv .venv || die "python3 -m venv failed ($(pkg_hint python3-venv))"
     ui_spin "Installing the speech engine..." .venv/bin/pip -q install kokoro-onnx soundfile
@@ -184,8 +204,8 @@ PYEOF
 }
 
 voice_questions() {  # voice + name + personality + summarizer -> config + prompt.txt
-  local install="$1"
-  cd "$install/voice"
+  local vdir="$1"
+  cd "$vdir"
 
   head_ "Pick a voice" "Every choice plays a sample before you commit."
   local OPTS=(
@@ -256,12 +276,12 @@ PYEOF
   cfg_set summarizer_model "\"$SUMMODEL\""
   cfg_set notify_throttle_seconds "120"
   cfg_set enabled "true"
-  cfg_set speaker "\"$install/voice\""
+  cfg_set speaker "\"$vdir\""
 
   local LNAME
   LNAME=$(echo "$NAME" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
   if [ -n "$LNAME" ] && ! grep -q "alias $LNAME=" "$SHELL_RC" 2>/dev/null; then
-    echo "alias $LNAME='$install/voice/pillctl'" >> "$SHELL_RC"
+    echo "alias $LNAME='$vdir/pillctl'" >> "$SHELL_RC"
     ok "shell alias: $LNAME (mute/unmute/replay/voice)"
   fi
 }
@@ -269,17 +289,22 @@ PYEOF
 # ================= voice-later subcommand =================
 if [ "$MODE" = "voice" ]; then
   [ -f "$DATA/config.json" ] || die "run ./linux/setup.sh (full) first"
-  INSTALL=$(python3 -c "import json,os;print(os.path.dirname(json.load(open(os.path.expanduser('$DATA/config.json'))).get('speaker', '$REPO/voice')))" 2>/dev/null || echo "$REPO")
-  [ -d "$INSTALL/voice" ] || INSTALL="$REPO"
+  if [ "$PACKAGED" = 1 ]; then
+    INSTALL="$REPO"
+  else
+    INSTALL=$(python3 -c "import json,os;print(os.path.dirname(json.load(open(os.path.expanduser('$DATA/config.json'))).get('speaker', '$REPO/voice')))" 2>/dev/null || echo "$REPO")
+    [ -d "$INSTALL/voice" ] || INSTALL="$REPO"
+  fi
+  VOICE=$(voice_dir "$INSTALL")
   banner
   head_ "Adding the voice" "Local TTS runtime + persona, for the install at $INSTALL"
   command -v pw-play >/dev/null || command -v paplay >/dev/null || command -v aplay >/dev/null \
     || warn "no audio player found (pw-play / paplay / aplay); $(pkg_hint pipewire-utils)"
-  voice_runtime "$INSTALL"
-  voice_questions "$INSTALL"
-  register_hooks "$INSTALL" 1
+  voice_runtime "$VOICE"
+  voice_questions "$VOICE"
+  register_hooks "$INSTALL" 1 "$VOICE"
   ok "voice hooks registered"
-  "$INSTALL/voice/.venv/bin/python" "$INSTALL/voice/say.py" "Voice is on. You'll hear from me when your sessions finish." >/dev/null 2>&1 &
+  "$VOICE/.venv/bin/python" "$VOICE/say.py" "Voice is on. You'll hear from me when your sessions finish." >/dev/null 2>&1 &
   echo
   ok "${B}Done. New sessions will be spoken.${N}"
   echo
@@ -321,15 +346,22 @@ command -v pw-play >/dev/null || command -v paplay >/dev/null || command -v apla
 ok "dependencies present"
 
 # ---------- 1. where to install ----------
-head_ "1 · Where should cc-pill live?" "The daemon, widget, scripts, and (optional) voice models stay in this folder."
-ui_input INSTALL "Install directory" "$REPO"
-INSTALL="${INSTALL/#\~/$HOME}"
-if [ "$INSTALL" != "$REPO" ]; then
-  mkdir -p "$INSTALL"
-  rsync -a --exclude .git "$REPO/" "$INSTALL/"
-  ok "copied to $INSTALL"
+if [ "$PACKAGED" = 1 ]; then
+  head_ "1 · Where cc-pill lives" "Installed by your package manager at $REPO; voice models and persona go to $DATA/voice."
+  INSTALL="$REPO"
+  ok "packaged install"
+else
+  head_ "1 · Where should cc-pill live?" "The daemon, widget, scripts, and (optional) voice models stay in this folder."
+  ui_input INSTALL "Install directory" "$REPO"
+  INSTALL="${INSTALL/#\~/$HOME}"
+  if [ "$INSTALL" != "$REPO" ]; then
+    mkdir -p "$INSTALL"
+    rsync -a --exclude .git "$REPO/" "$INSTALL/"
+    ok "copied to $INSTALL"
+  fi
 fi
 mkdir -p "$DATA"
+VOICE=$(voice_dir "$INSTALL")
 
 # ---------- 2. terminal ----------
 head_ "2 · Which terminal do you use?" "The card's open-terminal button opens or raises this one."
@@ -396,9 +428,9 @@ WANTVOICE="n"
 ui_confirm "Enable the voice?" "y" && WANTVOICE="y"
 
 # ---------- write base config ----------
-CCPILL_SP="$SYSPROMPT" python3 - "$DATA/config.json" "$WORKDIR" "$INSTALL" "$PERM" "$TERMINAL" "$HOTKEY" <<'PYEOF'
+CCPILL_SP="$SYSPROMPT" python3 - "$DATA/config.json" "$WORKDIR" "$VOICE" "$PERM" "$TERMINAL" "$HOTKEY" <<'PYEOF'
 import json, os, sys
-p, workdir, install, perm, terminal, hotkey = sys.argv[1:7]
+p, workdir, vdir, perm, terminal, hotkey = sys.argv[1:7]
 cfg = {}
 try: cfg = json.load(open(p))
 except Exception: pass
@@ -409,7 +441,7 @@ cfg.update({
     "hotkey": hotkey,
     "pill_gc_minutes": 30,
     "pill_system_prompt": os.environ.get("CCPILL_SP", ""),
-    "speaker": install + "/voice",
+    "speaker": vdir,
 })
 cfg.setdefault("daemon_port", 17357)
 cfg.setdefault("name", "Jarvis")
@@ -421,15 +453,19 @@ ok "config written to $DATA/config.json"
 # ---------- voice install ----------
 if [ "$WANTVOICE" = "y" ]; then
   head_ "Voice runtime" "Python venv + Kokoro models."
-  voice_runtime "$INSTALL"
-  voice_questions "$INSTALL"
+  voice_runtime "$VOICE"
+  voice_questions "$VOICE"
 fi
 
 # ---------- daemon (systemd user service) ----------
 head_ "Installing the daemon" "systemd user service: starts at login, auto-restarts."
-chmod +x "$INSTALL/linux/daemon/ccpilld.py" "$INSTALL/linux/bin/ccpill-ask" "$INSTALL/voice/pillctl" 2>/dev/null || true
-mkdir -p "$HOME/.config/systemd/user"
-sed "s|__INSTALL__|$INSTALL|g" "$INSTALL/linux/systemd/cc-pill.service" > "$HOME/.config/systemd/user/cc-pill.service"
+if [ "$PACKAGED" = 1 ]; then
+  rm -f "$HOME/.config/systemd/user/cc-pill.service"   # the package ships /usr/lib/systemd/user/cc-pill.service
+else
+  chmod +x "$INSTALL/linux/daemon/ccpilld.py" "$INSTALL/linux/bin/ccpill-ask" "$INSTALL/linux/bin/cc-pill-place" "$INSTALL/voice/pillctl" 2>/dev/null || true
+  mkdir -p "$HOME/.config/systemd/user"
+  sed "s|__INSTALL__|$INSTALL|g" "$INSTALL/linux/systemd/cc-pill.service" > "$HOME/.config/systemd/user/cc-pill.service"
+fi
 systemctl --user daemon-reload
 systemctl --user enable cc-pill.service >/dev/null 2>&1 || warn "could not enable cc-pill.service"
 systemctl --user restart cc-pill.service || warn "could not start cc-pill.service"
@@ -443,7 +479,16 @@ fi
 # ---------- widget ----------
 head_ "Installing the widget" "Plasma 6 applet com.ccpill.pill"
 PLASMOID="$INSTALL/linux/plasmoid/com.ccpill.pill"
-if [ -d "$HOME/.local/share/plasma/plasmoids/com.ccpill.pill" ]; then
+if [ "$PACKAGED" = 1 ]; then
+  # /usr/share/plasma/plasmoids/com.ccpill.pill came with the package; a
+  # per-user copy from an earlier source install would shadow it
+  if [ -d "$HOME/.local/share/plasma/plasmoids/com.ccpill.pill" ]; then
+    kpackagetool6 --type Plasma/Applet --remove com.ccpill.pill >/dev/null 2>&1 || true
+    ok "removed the older per-user copy of the widget"
+  fi
+  ok "widget installed system-wide by the package"
+  WIDGET_UPGRADED=1
+elif [ -d "$HOME/.local/share/plasma/plasmoids/com.ccpill.pill" ]; then
   kpackagetool6 --type Plasma/Applet --upgrade "$PLASMOID" >/dev/null 2>&1 \
     || die "kpackagetool6 --upgrade failed"
   ok "widget upgraded"
@@ -471,6 +516,7 @@ if qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "p
   ui_choose PLACE "Where should the pill live?" "${OPTS[@]}"
   EDGE=""; ALIGN="end"
   case "$PLACE" in
+    "Keep it where it is"*)  PLACED=1 ;;
     "Top panel · centre")    EDGE=top;    ALIGN=center ;;
     "Top panel · right"*)    EDGE=top ;;
     "Top panel · left")      EDGE=top;    ALIGN=start ;;
@@ -505,7 +551,7 @@ ok "hotkey registered (System Settings → Shortcuts → cc-pill: Ask, if it nee
 
 # ---------- register hooks ----------
 head_ "Registering Claude Code hooks" "Global; existing settings are preserved."
-if [ "$WANTVOICE" = "y" ]; then register_hooks "$INSTALL" 1; else register_hooks "$INSTALL" 0; fi
+if [ "$WANTVOICE" = "y" ]; then register_hooks "$INSTALL" 1 "$VOICE"; else register_hooks "$INSTALL" 0 "$VOICE"; fi
 ok "hooks in ~/.claude/settings.json"
 
 # ---------- optional tmux wrapper ----------
@@ -587,7 +633,7 @@ else
 fi
 if [ "$WANTVOICE" = "y" ]; then
   NAME_NOW=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('$DATA/config.json')))['name'])")
-  "$INSTALL/voice/.venv/bin/python" "$INSTALL/voice/say.py" "Hello, I'm $NAME_NOW. Set up and ready. Your sessions will appear in the panel, and I'll keep you posted out loud." >/dev/null 2>&1 &
+  "$VOICE/.venv/bin/python" "$VOICE/say.py" "Hello, I'm $NAME_NOW. Set up and ready. Your sessions will appear in the panel, and I'll keep you posted out loud." >/dev/null 2>&1 &
 fi
 python3 - <<'PYEOF'
 import json, os, time
@@ -597,6 +643,7 @@ with open(os.path.join(d, f"evt-{time.time_ns()}.json"), "w") as f:
 PYEOF
 
 echo
+VOICE_CMD="./linux/setup.sh"; [ "$PACKAGED" = 1 ] && VOICE_CMD="cc-pill-setup"
 NEXT1="Add the widget: right-click your panel → Add Widgets… → search “cc-pill”."
 NEXT2="$KDEHOTKEY anywhere: ask for something, a hands-free session starts."
 NEXT3="Widget upgraded: restart plasmashell to load it (systemctl --user restart plasma-plasmashell)."
@@ -605,12 +652,12 @@ if [ "$HASGUM" = 1 ]; then
   [ "$PLACED" = 1 ] || DONE_LINES+=("$(gum style --foreground "$INKDIM" "$NEXT1")")
   DONE_LINES+=("$(gum style --foreground "$INKDIM" "$NEXT2")")
   [ "$WIDGET_UPGRADED" = 1 ] && [ "$PLACED" = 0 ] && DONE_LINES+=("$(gum style --foreground "$INKDIM" "$NEXT3")")
-  [ "$WANTVOICE" = "y" ] || DONE_LINES+=("$(gum style --foreground "$INKDIM" 'Add the voice later: ./linux/setup.sh voice')")
+  [ "$WANTVOICE" = "y" ] || DONE_LINES+=("$(gum style --foreground "$INKDIM" "Add the voice later: $VOICE_CMD voice")")
   gum style --border rounded --border-foreground "$OLIVE" --padding "0 3" --margin "0 0 1 0" "${DONE_LINES[@]}"
 else
   printf "%sDone.%s New Claude sessions feed the pill.\n" "$G$B" "$N"
   [ "$PLACED" = 1 ] || echo "  $NEXT1"
   echo "  $NEXT2"
   [ "$WIDGET_UPGRADED" = 1 ] && [ "$PLACED" = 0 ] && echo "  $NEXT3"
-  [ "$WANTVOICE" = "y" ] || echo "  Add the voice later: ./linux/setup.sh voice"
+  [ "$WANTVOICE" = "y" ] || echo "  Add the voice later: $VOICE_CMD voice"
 fi

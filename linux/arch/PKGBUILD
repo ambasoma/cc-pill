@@ -1,0 +1,71 @@
+# Maintainer: ambasoma <https://github.com/ambasoma>
+# cc-pill for KDE Plasma: the Linux branch of https://github.com/ambasoma/cc-pill
+#
+#   makepkg -si          # build and install
+#   cc-pill-setup        # then, as your user: config, hooks, voice, placement
+#
+# The package is small on purpose: the daemon, the widget, the scripts and
+# the systemd user unit. The voice runtime (a Python venv and the ~310 MB
+# Kokoro model) is optional and goes to ~/.cc-pill/voice when cc-pill-setup
+# is told to enable the voice.
+
+pkgname=cc-pill-kde-git
+pkgver=r0
+pkgrel=1
+pkgdesc="A living Plasma panel widget for Claude Code: every session at a glance, spoken briefings, hands-free ask mode"
+arch=('any')
+url="https://github.com/ambasoma/cc-pill"
+license=('MIT')
+depends=('plasma-workspace' 'python' 'tmux' 'jq' 'curl' 'bash')
+optdepends=('kdialog: the ask-mode prompt box (zenity works too)'
+            'gum: the setup TUI'
+            'playerctl: duck your music while the voice speaks'
+            'kdotool: stay silent when that terminal is on screen; raise terminals from the card'
+            'pipewire-audio: voice playback through pw-play')
+makedepends=('git')
+provides=('cc-pill-kde')
+conflicts=('cc-pill-kde')
+install="$pkgname.install"
+source=("cc-pill::git+https://github.com/ambasoma/cc-pill.git#branch=linux-kde")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd cc-pill
+  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+package() {
+  cd cc-pill
+  local share="$pkgdir/usr/share/cc-pill"
+
+  # the tree setup.sh expects, under /usr/share/cc-pill
+  install -Dm755 linux/daemon/ccpilld.py -t "$share/linux/daemon"
+  install -Dm755 linux/bin/ccpill-ask linux/bin/cc-pill-place -t "$share/linux/bin"
+  install -Dm755 linux/setup.sh -t "$share/linux"
+  install -Dm644 linux/share/cc-pill-ask.desktop -t "$share/linux/share"
+  install -Dm644 linux/systemd/cc-pill.service -t "$share/linux/systemd"
+  install -Dm755 hooks/hook.py -t "$share/hooks"
+  install -Dm755 voice/worker.py voice/say.py voice/hook.py voice/pillctl -t "$share/voice"
+  install -Dm644 voice/prompt-template.txt -t "$share/voice"
+
+  # the widget, system-wide (no kpackagetool needed)
+  install -d "$pkgdir/usr/share/plasma/plasmoids"
+  cp -r linux/plasmoid/com.ccpill.pill "$pkgdir/usr/share/plasma/plasmoids/"
+  find "$pkgdir/usr/share/plasma/plasmoids/com.ccpill.pill" -type d -exec chmod 755 {} +
+  find "$pkgdir/usr/share/plasma/plasmoids/com.ccpill.pill" -type f -exec chmod 644 {} +
+
+  # the daemon as a systemd user unit; the ask-mode launcher (the per-user
+  # copy that cc-pill-setup writes carries the shortcut and overrides this)
+  sed "s|__INSTALL__|/usr/share/cc-pill|g" linux/systemd/cc-pill.service \
+    | install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/user/cc-pill.service"
+  sed -e "s|__INSTALL__|/usr/share/cc-pill|g" -e "/^X-KDE-Shortcuts=/d" linux/share/cc-pill-ask.desktop \
+    | install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/cc-pill-ask.desktop"
+
+  # commands
+  install -d "$pkgdir/usr/bin"
+  ln -s /usr/share/cc-pill/linux/setup.sh "$pkgdir/usr/bin/cc-pill-setup"
+  ln -s /usr/share/cc-pill/linux/bin/cc-pill-place "$pkgdir/usr/bin/cc-pill-place"
+
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname"
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname"
+}
