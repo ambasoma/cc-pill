@@ -104,7 +104,44 @@ It then builds the app, installs a launchd agent (starts at login, auto-restarts
 
 ## Linux (KDE Plasma)
 
-The same pill lives in a Plasma 6 panel: sessions, cats, paw, briefings and the card, with the voice playing through PipeWire and ducking your music over MPRIS. Ask mode is a <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> prompt box.
+The same pill as a native Plasma 6 panel widget: it takes the panel's font and colour scheme, keeps one width while traces stream, and blooms the spoken briefing in a window hanging off the panel. The voice plays through PipeWire and ducks your music over MPRIS; ask mode is a <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> prompt box.
+
+<p align="center">
+  <img src="linux/docs/panel-full.png" alt="A Plasma top panel with the cc-pill widget centred between the pager and the system tray" width="100%">
+</p>
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="linux/docs/panel-working.png" alt="Working: one dot per session and the current narration, in the panel's own font and colours" width="310"><br>
+      <sub><b>working</b> · the panel's font and colours, one dot per session</sub>
+    </td>
+    <td align="center">
+      <img src="linux/docs/panel-needs-you.png" alt="Needs you: amber dot and the words needs you" width="310"><br>
+      <sub><b>needs you</b> · the colour scheme's neutral colour</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="linux/docs/bloom.png" alt="The briefing bloom: a window hanging under the panel with the whole spoken summary" width="380"><br>
+      <sub><b>briefing</b> · blooms off the panel, words lighting up with the voice</sub>
+    </td>
+    <td align="center">
+      <img src="linux/docs/card.png" alt="The session card with last briefings and replay, prompt, terminal buttons" width="380"><br>
+      <sub><b>the card</b> · click, or hover for a peek that takes no focus</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="linux/docs/look-porcelain.png" alt="Porcelain look: cream capsule, sun glyph" width="310"><br>
+      <sub><b>porcelain</b> · the macOS look, one setting away</sub>
+    </td>
+    <td align="center">
+      <img src="linux/docs/settings-appearance.png" alt="Appearance settings: look, briefing, font, colours, capsule, border" width="310"><br>
+      <sub><b>settings</b> · placement, font, colours, borders, activation</sub>
+    </td>
+  </tr>
+</table>
 
 ```sh
 git clone https://github.com/ambasoma/cc-pill
@@ -112,7 +149,7 @@ cd cc-pill
 ./linux/setup.sh
 ```
 
-Then add the **cc-pill** widget to a panel. Details, requirements and the daemon's API: [linux/README.md](linux/README.md).
+Setup asks where on which panel the pill should live and puts it there. Details, settings, requirements and the daemon's API: [linux/README.md](linux/README.md).
 
 ## Controls
 
