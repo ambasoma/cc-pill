@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="linux/docs/panel-full.png" alt="A KDE Plasma top panel with the cc-pill widget centred between the pager and the system tray, narrating a working Claude Code session" width="100%">
+<a href="linux/docs/cc-pill-kde-demo.mp4"><img src="linux/docs/demo-poster.jpg" alt="Watch the demo: the briefing blooming under a Plasma panel. Click to play the 2½-minute video." width="100%"></a>
+
+<sub><b>▶ Watch the 2½-minute demo</b> · every state, the bloom, the card, the settings, placement and ask mode, narrated by the pill's own voice</sub>
 
 # cc-pill for KDE Plasma
 
@@ -24,9 +26,10 @@ Every Claude Code session on the machine at a glance, in your Plasma panel, in y
 
 cc-pill grew out of running [Moon Kiln](https://moonkiln.com), my handmade clay store, with Claude Code: answering customers, managing orders, printing shipping labels, updating the storefront, planning the work in Linear. Sessions run all day while my hands are busy with clay, and I wanted to know what Claude was up to, and be asked for what it needs, without sitting at a screen. So: a widget that watches every session from the panel, a voice that briefs me when something finishes, and a hotkey to hand Claude the next job. It is a proper Plasma widget: it follows your colour scheme, sits wherever you put it on any panel, and keeps one width while the traces stream so the rest of your panel never shuffles.
 
-**[Watch the demo](linux/docs/cc-pill-kde-demo.mp4)** (2½ minutes, narrated by the pill's own voice): the states, the bloom, the card and the peek, the settings, placement and ask mode.
-
 ## The pill
+
+<img src="linux/docs/panel-full.png" alt="A KDE Plasma top panel with the cc-pill widget centred between the pager and the system tray, narrating a working Claude Code session" width="100%">
+
 
 The widget is the signal. One dot per session in the colour scheme's accent, neutral and positive colours; words in the panel's font.
 
