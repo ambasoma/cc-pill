@@ -8,25 +8,67 @@ KCM.SimpleKCM {
     id: page
 
     property alias cfg_port: portSpin.value
-    property alias cfg_showCats: catsCheck.checked
     property alias cfg_slotChars: slotSpin.value
-    property string cfg_style
+    property alias cfg_openOnHover: hoverCheck.checked
+    property alias cfg_hoverDelay: delaySpin.value
+    property alias cfg_hitPadding: hitSpin.value
+    property alias cfg_showCats: catsCheck.checked
 
     Kirigami.FormLayout {
-        QQC2.ComboBox {
-            id: styleCombo
-            Kirigami.FormData.label: "Look:"
-            textRole: "text"
-            valueRole: "value"
-            model: [
-                { text: "Plasma · follows your colour scheme and panel font", value: "plasma" },
-                { text: "Porcelain · the macOS cc-pill pill", value: "porcelain" }
-            ]
-            Component.onCompleted: currentIndex = Math.max(0, indexOfValue(page.cfg_style))
-            onActivated: page.cfg_style = currentValue
+        QQC2.SpinBox {
+            id: slotSpin
+            Kirigami.FormData.label: "Text width:"
+            from: 8
+            to: 60
+            textFromValue: function(value) { return value + " characters" }
+            valueFromText: function(text) { return parseInt(text, 10) || 22 }
         }
 
-        Item { Kirigami.FormData.isSection: true }
+        QQC2.Label {
+            text: "The widget keeps this width while sessions run; longer text glides inside it."
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+
+        Item { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Activation" }
+
+        QQC2.CheckBox {
+            id: hoverCheck
+            Kirigami.FormData.label: "Open the card:"
+            text: "when the pointer rests on the widget (a click always works)"
+        }
+
+        QQC2.SpinBox {
+            id: delaySpin
+            Kirigami.FormData.label: "Hover delay:"
+            enabled: hoverCheck.checked
+            from: 0
+            to: 3000
+            stepSize: 50
+            textFromValue: function(value) { return value + " ms" }
+            valueFromText: function(text) { return parseInt(text, 10) || 0 }
+        }
+
+        QQC2.SpinBox {
+            id: hitSpin
+            Kirigami.FormData.label: "Hit area:"
+            from: 0
+            to: 48
+            textFromValue: function(value) { return value + " px each side" }
+            valueFromText: function(text) { return parseInt(text, 10) || 0 }
+        }
+
+        QQC2.Label {
+            text: "Extra space around the pill that reacts to the pointer, without changing how the pill looks."
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+        }
+
+        Item { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Daemon" }
 
         QQC2.SpinBox {
             id: portSpin
@@ -40,23 +82,6 @@ KCM.SimpleKCM {
 
         QQC2.Label {
             text: "Must match daemon_port in ~/.cc-pill/config.json (default 17357)."
-            font: Kirigami.Theme.smallFont
-            opacity: 0.7
-            wrapMode: Text.WordWrap
-            Layout.fillWidth: true
-        }
-
-        QQC2.SpinBox {
-            id: slotSpin
-            Kirigami.FormData.label: "Text width:"
-            from: 8
-            to: 60
-            textFromValue: function(value) { return value + " characters" }
-            valueFromText: function(text) { return parseInt(text, 10) || 22 }
-        }
-
-        QQC2.Label {
-            text: "The widget keeps this width while sessions run; longer text glides inside it."
             font: Kirigami.Theme.smallFont
             opacity: 0.7
             wrapMode: Text.WordWrap

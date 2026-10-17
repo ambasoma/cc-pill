@@ -455,6 +455,43 @@ else
   WIDGET_UPGRADED=0
 fi
 
+# ---------- placement ----------
+# Only when plasmashell is reachable on this session bus (not from ssh).
+PLACED=0
+if qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "print(1)" >/dev/null 2>&1; then
+  head_ "Placing the widget" "Pick a panel and a spot; Edit Mode lets you drag it anywhere later."
+  HERE_NOW=$(python3 "$INSTALL/linux/bin/cc-pill-place" --status 2>/dev/null | head -1)
+  OPTS=()
+  if [ -n "$HERE_NOW" ] && [ "$HERE_NOW" != "not on any panel" ]; then
+    OPTS+=("Keep it where it is ($HERE_NOW)")
+  fi
+  OPTS+=("Top panel · centre" "Top panel · right, before the tray" "Top panel · left"
+         "Bottom panel · right, before the tray" "Bottom panel · centre" "Bottom panel · left"
+         "Left panel" "Right panel" "I'll add it myself (Add Widgets…)")
+  ui_choose PLACE "Where should the pill live?" "${OPTS[@]}"
+  EDGE=""; ALIGN="end"
+  case "$PLACE" in
+    "Top panel · centre")    EDGE=top;    ALIGN=center ;;
+    "Top panel · right"*)    EDGE=top ;;
+    "Top panel · left")      EDGE=top;    ALIGN=start ;;
+    "Bottom panel · centre") EDGE=bottom; ALIGN=center ;;
+    "Bottom panel · right"*) EDGE=bottom ;;
+    "Bottom panel · left")   EDGE=bottom; ALIGN=start ;;
+    "Left panel")            EDGE=left ;;
+    "Right panel")           EDGE=right ;;
+  esac
+  if [ -n "$EDGE" ]; then
+    if python3 "$INSTALL/linux/bin/cc-pill-place" --edge "$EDGE" --align "$ALIGN"; then
+      ok "pill placed: $PLACE"
+      PLACED=1
+    else
+      warn "could not place the widget; add it by hand (right-click the panel → Add Widgets…)"
+    fi
+  fi
+else
+  warn "plasmashell not reachable from here; add the widget from the desktop (right-click the panel → Add Widgets…)"
+fi
+
 # ---------- hotkey ----------
 head_ "Registering the hotkey" "$KDEHOTKEY opens the ask box (KDE global shortcut)."
 mkdir -p "$HOME/.local/share/applications"
@@ -564,14 +601,16 @@ NEXT1="Add the widget: right-click your panel → Add Widgets… → search “c
 NEXT2="$KDEHOTKEY anywhere: ask for something, a hands-free session starts."
 NEXT3="Widget upgraded: restart plasmashell to load it (systemctl --user restart plasma-plasmashell)."
 if [ "$HASGUM" = 1 ]; then
-  DONE_LINES=("$(gum style --bold --foreground "$GOLD" 'Done. New Claude sessions feed the pill.')"
-              "$(gum style --foreground "$INKDIM" "$NEXT1")"
-              "$(gum style --foreground "$INKDIM" "$NEXT2")")
-  [ "$WIDGET_UPGRADED" = 1 ] && DONE_LINES+=("$(gum style --foreground "$INKDIM" "$NEXT3")")
+  DONE_LINES=("$(gum style --bold --foreground "$GOLD" 'Done. New Claude sessions feed the pill.')")
+  [ "$PLACED" = 1 ] || DONE_LINES+=("$(gum style --foreground "$INKDIM" "$NEXT1")")
+  DONE_LINES+=("$(gum style --foreground "$INKDIM" "$NEXT2")")
+  [ "$WIDGET_UPGRADED" = 1 ] && [ "$PLACED" = 0 ] && DONE_LINES+=("$(gum style --foreground "$INKDIM" "$NEXT3")")
   [ "$WANTVOICE" = "y" ] || DONE_LINES+=("$(gum style --foreground "$INKDIM" 'Add the voice later: ./linux/setup.sh voice')")
   gum style --border rounded --border-foreground "$OLIVE" --padding "0 3" --margin "0 0 1 0" "${DONE_LINES[@]}"
 else
-  printf "%sDone.%s New Claude sessions feed the pill.\n  %s\n  %s\n" "$G$B" "$N" "$NEXT1" "$NEXT2"
-  [ "$WIDGET_UPGRADED" = 1 ] && echo "  $NEXT3"
+  printf "%sDone.%s New Claude sessions feed the pill.\n" "$G$B" "$N"
+  [ "$PLACED" = 1 ] || echo "  $NEXT1"
+  echo "  $NEXT2"
+  [ "$WIDGET_UPGRADED" = 1 ] && [ "$PLACED" = 0 ] && echo "  $NEXT3"
   [ "$WANTVOICE" = "y" ] || echo "  Add the voice later: ./linux/setup.sh voice"
 fi

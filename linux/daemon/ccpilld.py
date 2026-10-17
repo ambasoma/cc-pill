@@ -628,6 +628,23 @@ class Store:
             log("recap fallback via pillctl")
         return code == 0
 
+    PLACE_EDGES = ("top", "bottom", "left", "right")
+    PLACE_ALIGNS = ("start", "center", "end")
+
+    def place(self, edge, align):
+        """Move the widget to a panel edge/position (the widget's Placement
+        settings page). Runs linux/bin/cc-pill-place detached: it may restart
+        plasmashell, which would take this request's caller with it."""
+        if edge not in self.PLACE_EDGES or align not in self.PLACE_ALIGNS:
+            return False
+        script = os.path.join(INSTALL_DIR, "linux", "bin", "cc-pill-place")
+        if not os.path.exists(script):
+            self.flash("cc-pill-place not found")
+            return False
+        log(f"place: {edge} {align}")
+        self.flash("Moving the widget…")
+        return self.spawn([sys.executable, script, "--edge", edge, "--align", align])
+
     def terminal_command(self, tail):
         """Command line that opens the configured terminal running `tail`."""
         term = self.config.terminal.strip() or "konsole"
@@ -865,6 +882,8 @@ def make_handler(store):
             elif route == "/mute":
                 self._send(200, {"ok": True, "muted": store.toggle_mute()})
                 return
+            elif route == "/place":
+                ok = store.place(body.get("edge"), body.get("align"))
             elif route == "/stop":
                 store.stop_speech()
                 ok = True

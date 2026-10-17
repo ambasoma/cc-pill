@@ -83,16 +83,44 @@ New text slides in the way the Mac pill swaps its narration, text wider than
 the slot glides sideways to show its tail, and a spoken briefing crawls in
 step with the voice. Neighbouring panel widgets never get shoved.
 
-To centre it like the Mac pill, put a *Panel Spacer* on each side of it
-(right-click the panel → Enter Edit Mode → Add Spacer, twice, then drag the
-widget between them). A panel that also holds an expanding task manager
-shares its free space with the spacers, so a true centre needs the task
-manager on another panel or the pill next to the clock instead.
+Right-click the widget → *Configure…* for three pages:
 
-Right-click the widget → *Configure…* to change the text width, to pick
-**Porcelain** instead (the macOS cc-pill look: cream pill by day, kiln at
-night, sun and moon glyph, tapping paw), and to let the cats run laps while
-Claude works (off by default).
+- **General**: text width; activation (open the card on click, or when the
+  pointer rests on the widget for a delay you set; extra hit area around the
+  pill); the daemon port; the cats (off by default).
+- **Appearance**: the look (**Plasma**, or **Porcelain**: the macOS cc-pill
+  pill, cream by day, kiln at night, sun and moon, tapping paw); the font (the
+  panel's, or any font, size, weight and italic from a font dialog); the
+  colours (follow the scheme, or custom text, accent, needs-you, done,
+  capsule fill and border colours); a tinted capsule behind the words; the
+  border width and the corner radius.
+- **Placement**: pick a panel edge (top, bottom, left, right) and a position
+  (left, centre between two spacers, or right before the system tray) and
+  press *Move*. See below.
+
+## Placement
+
+The pill is a panel widget, so Plasma's own way always works: right-click a
+panel → *Enter Edit Mode*, drag the widget anywhere on any panel, or add two
+*Panel Spacers* around it to centre it. A panel that also holds an expanding
+task manager shares its free space with the spacers, so a true centre needs
+the task manager on another panel or the pill next to the clock instead.
+
+Setup asks where the pill should live, and the widget's *Placement* page does
+the same later. Both run `linux/bin/cc-pill-place`:
+
+```sh
+linux/bin/cc-pill-place --edge top --align center      # also: bottom/left/right, start/end
+linux/bin/cc-pill-place --status
+```
+
+It drives plasmashell over D-Bus: a new pill is added to the chosen panel (a
+panel is created at that edge if there is none, and removed again when the
+pill leaves it), your settings are copied over, the old pill goes away, and
+"centre" brackets the pill with two spacers. Plasma reads a panel's widget
+order only at startup, so when the pill has to go anywhere but the end of the
+panel the shell restarts for a couple of seconds. A vertical panel shows the
+dots only; the words and the card are a click away.
 
 ## Config
 
@@ -111,7 +139,7 @@ Everything else (`name`, `voice`, `speed`, `volume`, `home_repo`, `permission_mo
 | Control | What it does |
 | --- | --- |
 | <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> (your choice) | Ask mode: a prompt box; <kbd>Enter</kbd> starts a detached session that is tracked and briefed. |
-| Hover the pill | Tooltip with the session summary. |
+| Hover the pill | Tooltip with the session summary, or the card itself with *open on hover* in the settings. |
 | Click the pill | The card: one row per session with replay-briefing, send-a-prompt and open-terminal buttons, `+ NEW`, and the mute toggle. |
 | `<yourname>` in the shell | `mute`, `on`, `stop`, `last`, `say <text>`, `voice <name>`, `vol`, `speed`. |
 

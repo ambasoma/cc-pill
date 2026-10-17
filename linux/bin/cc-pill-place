@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""
+Put the cc-pill widget where the user wants it on a Plasma 6 panel.
+
+    cc-pill-place --edge top|bottom|left|right --align start|center|end
+    cc-pill-place --status
+
+Plasma's own way is Edit Mode and dragging; this does the same thing from
+setup (and from the widget's Placement settings page through the daemon).
+
+How it works: plasmashell is driven over D-Bus with its desktop scripting
+API. One script adds a new pill to the chosen panel (creating the panel if
+that edge has none), copies the old pill's settings onto it and removes the
+old one; "center" also brackets the pill with two Panel Spacers tagged as
+ours. Plasma only reads a panel's widget order (AppletOrder) at startup, so
+when the pill has to go anywhere but the end, the shell is restarted for a
+few seconds with the order rewritten in between.
+
+The pure functions (plan_order, config parsing) are tested in
+linux/daemon/tests/test_place.py.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+PILL = "com.ccpill.pill"
+SPACER = "org.kde.plasma.panelspacer"
+TAG_KEY = "ccpillSpacer"
+PANEL_TAG_KEY = "ccpillPanel"
+APPLETSRC = os.path.expanduser("~/.config/plasma-org.kde.plasma.desktop-appletsrc")
+EDGES = ("top", "bottom", "left", "right")
+ALIGNS = ("start", "center", "end")
+
+# Widgets that make up the "right-hand cluster" of a stock Plasma panel. The
+# pill goes just before the first of these for "end" and "center".
+RIGHT_CLUSTER = ("org.kde.plasma.marginsseparator", "org.kde.plasma.systemtray",
+                 "org.kde.plasma.digitalclock", "org.kde.plasma.showdesktop",
+                 "org.kde.plasma.minimizeall", "org.kde.plasma.lock_logout")
+TASK_MANAGERS = ("org.kde.plasma.icontasks", "org.kde.plasma.taskmanager",
+                 "org.kde.plasma.icontasksonly")
+
+
+# ------------------------------------------------------------ pure logic
+
+def plan_order(order, pill_id, spacer_ids, align, types):
+    """New AppletOrder for a panel.
+
+    order: current applet ids in visual order; pill_id: the (new) pill;
+    spacer_ids: our two spacers for "center" (else empty); types: id -> plugin.
+    """
+    ours = {pill_id, *spacer_ids}
+    rest = [i for i in order if i not in ours]
+    block = [spacer_ids[0], pill_id, spacer_ids[1]] if len(spacer_ids) == 2 else [pill_id]
+    if align == "start":
+        return block + rest
+    # "end" sits just before the right-hand cluster (tray, clock); "center"
+    # goes right after a task manager when there is one, else before the
+    # cluster too.
+    cut = next((i for i, wid in enumerate(rest) if types.get(wid) in RIGHT_CLUSTER), len(rest))
+    if align == "center":
+        tms = [i for i, wid in enumerate(rest) if types.get(wid) in TASK_MANAGERS]
+        if tms:
+            cut = tms[-1] + 1
+    return rest[:cut] + block + rest[cut:]
+
+
+def parse_appletsrc(text):
+    """{containment id: {"order": [...], "applets": {id: plugin}}} from the
+    INI file plasmashell keeps its layout in."""
+    out = {}
+    section = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = [p for p in line[1:-1].split("][")]
+            continue
+        if not section or "=" not in line or section[0] != "Containments":
+            continue
+        key, _, value = line.partition("=")
+        cid = section[1]
+        c = out.setdefault(cid, {"order": [], "applets": {}})
+        if section[2:] == ["General"] and key == "AppletOrder":
+            c["order"] = [v for v in value.split(";") if v]
+        elif len(section) == 4 and section[2] == "Applets" and key == "plugin":
+            c["applets"][section[3]] = value
+    return out
+
+
+def rewrite_order(text, cid, order):
+    """Return the INI text with [Containments][cid][General] AppletOrder set."""
+    lines = text.splitlines()
+    header = f"[Containments][{cid}][General]"
+    out, i, done = [], 0, False
+    while i < len(lines):
+        out.append(lines[i])
+        if lines[i].strip() == header:
+            i += 1
+            replaced = False
+            while i < len(lines) and not lines[i].startswith("["):
+                if lines[i].split("=", 1)[0].strip() == "AppletOrder":
+                    out.append("AppletOrder=" + ";".join(order))
+                    replaced = True
+                else:
+                    out.append(lines[i])
+                i += 1
+            if not replaced:
+                # keep the blank line that separates sections after the key
+                tail = []
+                while out and out[-1].strip() == "":
+                    tail.append(out.pop())
+                out.append("AppletOrder=" + ";".join(order))
+                out += tail
+            done = True
+            continue
+        i += 1
+    if not done:
+        out += ["", header, "AppletOrder=" + ";".join(order)]
+    return "\n".join(out) + "\n"
+
+
+# ---------------------------------------------------------- plasma shell
+
+def shell_env():
+    env = dict(os.environ)
+    if not env.get("XDG_RUNTIME_DIR"):
+        env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+    if not env.get("DBUS_SESSION_BUS_ADDRESS"):
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + os.path.join(env["XDG_RUNTIME_DIR"], "bus")
+    return env
+
+
+def evaluate(script, env):
+    """Run a Plasma desktop script; returns its printed output."""
+    for tool in ("qdbus6", "qdbus"):
+        if shutil.which(tool):
+            cmd = [tool, "org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript", script]
+            break
+    else:
+        if not shutil.which("gdbus"):
+            raise RuntimeError("need qdbus6 (or gdbus) to talk to plasmashell")
+        cmd = ["gdbus", "call", "--session", "--dest", "org.kde.plasmashell", "--object-path", "/PlasmaShell",
+               "--method", "org.kde.PlasmaShell.evaluateScript", script]
+    p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=30)
+    if p.returncode != 0:
+        raise RuntimeError((p.stderr or p.stdout).strip() or "plasmashell did not answer")
+    out = p.stdout.strip()
+    if cmd[0] == "gdbus" and out.startswith("('") and out.endswith("',)"):
+        out = out[2:-3].encode().decode("unicode_escape")
+    return out
+
+
+SCRIPT = r"""
+var edge = "__EDGE__", center = __CENTER__;
+var all = panels();
+var olds = [], oldSpacers = [];
+for (const p of all) {
+    for (const w of p.widgets("__PILL__")) olds.push(w);
+    for (const w of p.widgets("__SPACER__")) {
+        w.currentConfigGroup = ["General"];
+        if (String(w.readConfig("__TAG__", false)) == "true") oldSpacers.push(w);
+    }
+}
+var target = null;
+for (const p of all) if (p.location == edge && (target === null || p.screen < target.screen)) target = p;
+var created = false;
+if (target === null) {
+    target = new Panel();
+    target.location = edge;
+    if (all.length) target.height = all[0].height;
+    target.currentConfigGroup = ["General"];
+    target.writeConfig("__PANELTAG__", true);   // ours: removed again once empty
+    created = true;
+}
+// a panel this script made earlier, now left with nothing but the widgets
+// being removed, goes away with them
+var goneIds = olds.concat(oldSpacers).map(w => w.id);
+for (const p of all) {
+    if (p.id == target.id) continue;
+    p.currentConfigGroup = ["General"];
+    if (String(p.readConfig("__PANELTAG__", false)) != "true") continue;
+    if (p.widgetIds.every(i => goneIds.indexOf(i) >= 0)) p.remove();
+}
+var spacers = [];
+if (center) { var s = target.addWidget("__SPACER__"); s.currentConfigGroup = ["General"]; s.writeConfig("__TAG__", true); s.writeConfig("expanding", true); spacers.push(s.id); }
+var pill = target.addWidget("__PILL__");
+if (olds.length) {
+    // carry the settings over: the widget's own keys live in [General]
+    var o = olds[0];
+    o.currentConfigGroup = [];
+    var groups = o.configGroups.slice();
+    if (groups.indexOf("General") < 0) groups.push("General");
+    for (const g of groups) {
+        o.currentConfigGroup = [g]; pill.currentConfigGroup = [g];
+        for (const k of o.configKeys) pill.writeConfig(k, o.readConfig(k));
+    }
+}
+if (center) { var s2 = target.addWidget("__SPACER__"); s2.currentConfigGroup = ["General"]; s2.writeConfig("__TAG__", true); s2.writeConfig("expanding", true); spacers.push(s2.id); }
+for (const w of olds) w.remove();
+for (const w of oldSpacers) w.remove();
+var types = {};
+for (const i of target.widgetIds) types[i] = target.widgetById(i).type;
+print(JSON.stringify({ panel: target.id, pill: pill.id, spacers: spacers, created: created,
+                       removed: olds.length + oldSpacers.length, types: types }));
+"""
+
+
+def place(edge, align, env, log=print):
+    script = (SCRIPT.replace("__EDGE__", edge).replace("__CENTER__", "true" if align == "center" else "false")
+              .replace("__PILL__", PILL).replace("__SPACER__", SPACER).replace("__TAG__", TAG_KEY)
+              .replace("__PANELTAG__", PANEL_TAG_KEY))
+    info = json.loads(evaluate(script, env))
+    cid, pill_id = str(info["panel"]), str(info["pill"])
+    spacer_ids = [str(s) for s in info["spacers"]]
+    log(f"pill {pill_id} on {edge} panel {cid}" + (" (new panel)" if info["created"] else "")
+        + (f", replaced {info['removed']} old widget(s)" if info["removed"] else ""))
+    # Let the shell write the layout out, then look at the real order.
+    time.sleep(1.5)
+    with open(APPLETSRC) as f:
+        text = f.read()
+    layout = parse_appletsrc(text).get(cid)
+    if layout is None:
+        log("panel not written to the layout file yet; order left as added")
+        return True
+    types = {wid: plugin for wid, plugin in layout["applets"].items()}
+    types.update({str(k): v for k, v in info["types"].items()})
+    current = layout["order"] or list(types)
+    for wid in (pill_id, *spacer_ids):  # just added; may not be in AppletOrder yet
+        if wid not in current:
+            current.append(wid)
+    wanted = plan_order(current, pill_id, spacer_ids, align, types)
+    if wanted == current:
+        return True
+    # Plasma reads AppletOrder only at startup.
+    log("reordering the panel (plasmashell restarts for a moment)")
+    unit = "plasma-plasmashell.service"
+    subprocess.run(["systemctl", "--user", "stop", unit], env=env, timeout=30)
+    try:
+        with open(APPLETSRC) as f:
+            text = f.read()
+        with open(APPLETSRC, "w") as f:
+            f.write(rewrite_order(text, cid, wanted))
+    finally:
+        start_shell(unit, env, log)
+    return True
+
+
+def start_shell(unit, env, log=print):
+    """Start plasmashell again, past systemd's start-rate limit if a few
+    moves in a row tripped it."""
+    for attempt in range(3):
+        if attempt:
+            subprocess.run(["systemctl", "--user", "reset-failed", unit], env=env, timeout=30)
+            time.sleep(1)
+        subprocess.run(["systemctl", "--user", "start", unit], env=env, timeout=60)
+        for _ in range(20):
+            p = subprocess.run(["systemctl", "--user", "is-active", unit], env=env, capture_output=True, text=True, timeout=30)
+            if p.stdout.strip() == "active":
+                return True
+            time.sleep(0.5)
+        log("plasmashell did not come up, trying again")
+    return False
+
+
+def status(env):
+    out = evaluate("""
+var r = [];
+for (const p of panels()) for (const w of p.widgets("%s")) r.push(p.location + " panel " + p.id);
+print(r.join("\\n"));""" % PILL, env)
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="Place the cc-pill widget on a Plasma panel.")
+    ap.add_argument("--edge", choices=EDGES)
+    ap.add_argument("--align", choices=ALIGNS, default="end")
+    ap.add_argument("--status", action="store_true", help="say where the pill is")
+    a = ap.parse_args(argv)
+    env = shell_env()
+    try:
+        if a.status:
+            print(status(env) or "not on any panel")
+            return 0
+        if not a.edge:
+            ap.error("--edge is required")
+        place(a.edge, a.align, env)
+        return 0
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
+        print(f"cc-pill-place: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

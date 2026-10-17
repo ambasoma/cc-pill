@@ -36,10 +36,13 @@ Item {
     readonly property real pillH: Math.max(16, Math.min(height - 2, 27))
     // The words live in a slot of fixed width (ctl.slotChars average characters)
     // so the panel never shuffles while traces stream; see SlideText.qml.
-    readonly property font labelFont: nativeLook ? Kirigami.Theme.defaultFont : porcelainFont
+    readonly property bool customFont: ctl ? ctl.customFont : false
+    readonly property font labelFont: customFont ? ctl.customFontValue : nativeLook ? Kirigami.Theme.defaultFont : porcelainFont
     readonly property font porcelainFont: Qt.font({ pixelSize: Math.round(pillH * 0.42), weight: Font.Medium })
-    readonly property font speakFont: nativeLook ? Kirigami.Theme.defaultFont
+    readonly property font speakFont: customFont ? ctl.customFontValue : nativeLook ? Kirigami.Theme.defaultFont
                                                  : Qt.font({ pixelSize: Math.round(pillH * 0.46), weight: Font.Medium })
+    // extra clickable (and hoverable) room on each side of the pill
+    readonly property int hit: ctl ? Math.max(0, ctl.hitPadding) : 0
     TextMetrics { id: slotMetrics; font: pillRoot.labelFont; text: "n".repeat(pillRoot.ctl ? pillRoot.ctl.slotChars : 22) }
     readonly property real slotW: Math.ceil(slotMetrics.width)
     readonly property real padH: nativeLook ? Kirigami.Units.smallSpacing * 1.5 : Math.round(pillH * 0.4)
@@ -60,13 +63,14 @@ Item {
         }
     }
 
-    Layout.minimumWidth: vertical ? -1 : animW
-    Layout.preferredWidth: vertical ? -1 : animW
-    Layout.maximumWidth: vertical ? -1 : animW
+    readonly property real outerW: animW > 0 ? animW + hit * 2 : 0
+    Layout.minimumWidth: vertical ? -1 : outerW
+    Layout.preferredWidth: vertical ? -1 : outerW
+    Layout.maximumWidth: vertical ? -1 : outerW
     Layout.fillHeight: !vertical
     Layout.fillWidth: vertical
-    Layout.preferredHeight: vertical ? pillH + 4 : -1
-    Layout.minimumHeight: vertical ? pillH + 4 : -1
+    Layout.preferredHeight: vertical ? pillH + 4 + hit * 2 : -1
+    Layout.minimumHeight: vertical ? pillH + 4 + hit * 2 : -1
 
     // ----------------------------------------------------------- helpers
 
@@ -119,11 +123,11 @@ Item {
         anchors.centerIn: parent
         width: Math.max(0, Math.min(pillRoot.animW, pillRoot.width))
         height: pillRoot.pillH
-        radius: height / 2
+        radius: pillRoot.theme ? Math.max(0, Math.min(height / 2, pillRoot.theme.cornerRadius)) : height / 2
         visible: width > 1 && pillRoot.theme !== null
         color: pillRoot.theme ? pillRoot.theme.bg : "transparent"
-        border.width: 1
-        border.color: pillRoot.theme ? pillRoot.theme.line : "transparent"
+        border.width: pillRoot.theme ? pillRoot.theme.borderWidth : 0
+        border.color: pillRoot.theme && border.width > 0 ? pillRoot.theme.line : "transparent"
         clip: true
 
         Behavior on color { ColorAnimation { duration: 600 } }
@@ -413,11 +417,23 @@ Item {
             }
         }
 
-        MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: if (pillRoot.ctl) pillRoot.ctl.expanded = !pillRoot.ctl.expanded
+    }
+
+    // The activation area: the pill plus the configured padding around it.
+    // Click toggles the card; with "open on hover" the card opens once the
+    // pointer has rested here for the configured delay.
+    MouseArea {
+        id: hitArea
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: if (pillRoot.ctl) pillRoot.ctl.expanded = !pillRoot.ctl.expanded
+        onEntered: if (pillRoot.ctl && pillRoot.ctl.openOnHover && !pillRoot.ctl.expanded) hoverTimer.restart()
+        onExited: hoverTimer.stop()
+        Timer {
+            id: hoverTimer
+            interval: pillRoot.ctl ? Math.max(0, pillRoot.ctl.hoverDelay) : 400
+            onTriggered: if (pillRoot.ctl && hitArea.containsMouse && pillRoot.st !== "hidden") pillRoot.ctl.expanded = true
         }
     }
 }

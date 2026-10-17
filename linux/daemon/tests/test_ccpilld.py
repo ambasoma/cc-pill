@@ -672,6 +672,17 @@ class HttpTest(Base):
         code, obj = self.req("/stop", method="POST")
         self.assertEqual(obj["ok"], True)
 
+    def test_place_route_runs_the_placer_detached(self):
+        code, obj = self.req("/place", method="POST", body={"edge": "top", "align": "center"})
+        self.assertEqual((code, obj["ok"]), (200, True))
+        args, _ = self.spawner.calls[-1]
+        self.assertTrue(args[1].endswith("linux/bin/cc-pill-place"))
+        self.assertEqual(args[2:], ["--edge", "top", "--align", "center"])
+        self.assertEqual(self.store.snapshot()["toast"], "Moving the widget…")
+        self.assertEqual(self.req("/place", method="POST", body={"edge": "middle", "align": "end"})[1]["ok"], False)
+        self.assertEqual(self.req("/place", method="POST", body={"edge": "top", "align": "sideways"})[1]["ok"], False)
+        self.assertEqual(len(self.spawner.calls), 1)
+
     def test_ask_route_launches_in_background(self):
         done = threading.Event()
         self.tmux_server()

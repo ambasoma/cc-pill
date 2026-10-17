@@ -22,6 +22,9 @@ PlasmoidItem {
     // panel widget (default). "porcelain": the macOS cc-pill look.
     readonly property bool nativeLook: Plasmoid.configuration.style !== "porcelain"
     readonly property int slotChars: Plasmoid.configuration.slotChars
+    readonly property bool openOnHover: Plasmoid.configuration.openOnHover
+    readonly property int hoverDelay: Plasmoid.configuration.hoverDelay
+    readonly property int hitPadding: Plasmoid.configuration.hitPadding
     readonly property string base: "http://127.0.0.1:" + port
 
     property bool online: false
@@ -57,18 +60,42 @@ PlasmoidItem {
     readonly property color schemeBg: Kirigami.Theme.backgroundColor
     readonly property bool night: (0.2126 * schemeBg.r + 0.7152 * schemeBg.g + 0.0722 * schemeBg.b) < 0.5
 
+    // Custom colours and font, when the user picked them in the settings,
+    // override either look.
+    readonly property var cfg: Plasmoid.configuration
+    readonly property bool customColors: cfg.colors === "custom"
+    readonly property bool customFont: cfg.customFont
+    readonly property font customFontValue: Qt.font({
+        family: cfg.fontFamily || Kirigami.Theme.defaultFont.family,
+        pointSize: cfg.fontSize > 0 ? cfg.fontSize : Kirigami.Theme.defaultFont.pointSize,
+        weight: Math.max(100, Math.min(900, cfg.fontWeight || 400)),
+        italic: cfg.fontItalic
+    })
+    readonly property color schemeInk: Kirigami.Theme.textColor
+
     readonly property QtObject theme: QtObject {
         readonly property bool nativeLook: root.nativeLook
         readonly property bool night: root.night
-        readonly property color bg: root.nativeLook ? "transparent" : (root.night ? "#181D0E" : "#F8F3E8")
-        readonly property color ink: root.nativeLook ? Kirigami.Theme.textColor : (root.night ? "#EFE8D3" : "#2A2620")
-        readonly property color line: root.nativeLook ? "transparent"
-                                                  : (root.night ? Qt.rgba(1, 1, 1, 0.06) : Qt.rgba(0.165, 0.149, 0.125, 0.16))
-        readonly property color gold: root.nativeLook ? Kirigami.Theme.highlightColor : (root.night ? "#D9B44A" : "#A88117")
-        readonly property color amber: root.nativeLook ? Kirigami.Theme.neutralTextColor : (root.night ? "#D9913A" : "#B26E1C")
-        readonly property color olive: root.nativeLook ? Kirigami.Theme.highlightColor : (root.night ? "#A9BD66" : "#5F7036")
-        readonly property color sage: root.nativeLook ? Kirigami.Theme.positiveTextColor : "#7FB39D"
-        readonly property real gloss: root.nativeLook ? 0 : (root.night ? 0.07 : 0.38)
+        readonly property color bg: root.customColors ? root.cfg.backgroundColor
+            : root.nativeLook ? (root.cfg.capsule ? Qt.rgba(root.schemeInk.r, root.schemeInk.g, root.schemeInk.b, 0.09) : "transparent")
+            : (root.night ? "#181D0E" : "#F8F3E8")
+        readonly property color ink: root.customColors ? root.cfg.textColor
+            : root.nativeLook ? root.schemeInk : (root.night ? "#EFE8D3" : "#2A2620")
+        readonly property color line: root.customColors ? root.cfg.borderColor
+            : root.nativeLook ? Qt.rgba(root.schemeInk.r, root.schemeInk.g, root.schemeInk.b, 0.28)
+            : (root.night ? Qt.rgba(1, 1, 1, 0.06) : Qt.rgba(0.165, 0.149, 0.125, 0.16))
+        readonly property color gold: root.customColors ? root.cfg.accentColor
+            : root.nativeLook ? Kirigami.Theme.highlightColor : (root.night ? "#D9B44A" : "#A88117")
+        readonly property color amber: root.customColors ? root.cfg.attentionColor
+            : root.nativeLook ? Kirigami.Theme.neutralTextColor : (root.night ? "#D9913A" : "#B26E1C")
+        readonly property color olive: root.customColors ? root.cfg.accentColor
+            : root.nativeLook ? Kirigami.Theme.highlightColor : (root.night ? "#A9BD66" : "#5F7036")
+        readonly property color sage: root.customColors ? root.cfg.doneColor
+            : root.nativeLook ? Kirigami.Theme.positiveTextColor : "#7FB39D"
+        readonly property real gloss: (root.nativeLook || root.customColors) ? 0 : (root.night ? 0.07 : 0.38)
+        // porcelain always has its hairline; the native look has none unless asked
+        readonly property int borderWidth: root.nativeLook ? root.cfg.borderWidth : Math.max(1, root.cfg.borderWidth)
+        readonly property int cornerRadius: root.cfg.cornerRadius
     }
 
     // --------------------------------------------------------- plasmoid

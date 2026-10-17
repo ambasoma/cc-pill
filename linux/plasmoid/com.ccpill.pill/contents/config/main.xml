@@ -5,21 +5,98 @@
       http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
   <kcfgfile name=""/>
   <group name="General">
+    <!-- daemon -->
     <entry name="port" type="Int">
       <label>Localhost port the cc-pill daemon listens on.</label>
       <default>17357</default>
     </entry>
-    <entry name="style" type="String">
-      <label>Look: "plasma" follows the Plasma colour scheme; "porcelain" is the macOS cc-pill look.</label>
-      <default>plasma</default>
-    </entry>
+
+    <!-- behaviour -->
     <entry name="slotChars" type="Int">
       <label>Width of the text slot, in average characters. The panel keeps this width while sessions run.</label>
       <default>22</default>
     </entry>
+    <entry name="openOnHover" type="Bool">
+      <label>Open the session card when the pointer rests on the widget (otherwise on click).</label>
+      <default>false</default>
+    </entry>
+    <entry name="hoverDelay" type="Int">
+      <label>How long the pointer must rest before the card opens, in milliseconds.</label>
+      <default>400</default>
+    </entry>
+    <entry name="hitPadding" type="Int">
+      <label>Extra clickable space on each side of the pill, in pixels.</label>
+      <default>0</default>
+    </entry>
     <entry name="showCats" type="Bool">
       <label>Let the cats (Charlie and Lily) run laps while Claude works.</label>
       <default>false</default>
+    </entry>
+
+    <!-- look -->
+    <entry name="style" type="String">
+      <label>Look: "plasma" follows the Plasma colour scheme; "porcelain" is the macOS cc-pill look.</label>
+      <default>plasma</default>
+    </entry>
+    <entry name="customFont" type="Bool">
+      <label>Use the font below instead of the panel's font.</label>
+      <default>false</default>
+    </entry>
+    <entry name="fontFamily" type="String">
+      <label>Font family (empty: the panel's font).</label>
+      <default></default>
+    </entry>
+    <entry name="fontSize" type="Int">
+      <label>Font size in points (0: the panel's size).</label>
+      <default>0</default>
+    </entry>
+    <entry name="fontWeight" type="Int">
+      <label>Font weight, 100 to 900.</label>
+      <default>400</default>
+    </entry>
+    <entry name="fontItalic" type="Bool">
+      <label>Italic text.</label>
+      <default>false</default>
+    </entry>
+    <entry name="colors" type="String">
+      <label>Colours: "scheme" follows the colour scheme (or the porcelain palette); "custom" uses the colours below.</label>
+      <default>scheme</default>
+    </entry>
+    <entry name="textColor" type="Color">
+      <label>Text colour.</label>
+      <default>35,38,41,255</default>
+    </entry>
+    <entry name="accentColor" type="Color">
+      <label>Accent: working sessions and the voice.</label>
+      <default>61,174,233,255</default>
+    </entry>
+    <entry name="attentionColor" type="Color">
+      <label>A session that needs you.</label>
+      <default>246,116,0,255</default>
+    </entry>
+    <entry name="doneColor" type="Color">
+      <label>A finished session.</label>
+      <default>39,174,96,255</default>
+    </entry>
+    <entry name="backgroundColor" type="Color">
+      <label>Capsule fill behind the pill.</label>
+      <default>255,255,255,0</default>
+    </entry>
+    <entry name="borderColor" type="Color">
+      <label>Capsule border colour.</label>
+      <default>35,38,41,70</default>
+    </entry>
+    <entry name="capsule" type="Bool">
+      <label>With scheme colours: tint a capsule behind the pill.</label>
+      <default>false</default>
+    </entry>
+    <entry name="borderWidth" type="Int">
+      <label>Capsule border width in pixels (0: none).</label>
+      <default>0</default>
+    </entry>
+    <entry name="cornerRadius" type="Int">
+      <label>Capsule corner radius in pixels (99: fully round).</label>
+      <default>99</default>
     </entry>
   </group>
 </kcfg>
