@@ -48,8 +48,13 @@ Item {
     readonly property real padH: nativeLook ? Kirigami.Units.smallSpacing * 1.5 : Math.round(pillH * 0.4)
     readonly property real maxW: 430
 
+    // No sessions: either gone entirely (the Mac way) or parked as a faint
+    // dot, so the widget can still be found, hovered and clicked for "+ NEW"
+    // and so an offline daemon is discoverable through the tooltip.
+    readonly property bool parked: st === "hidden" && ctl && ctl.idleDot
+
     readonly property real targetW: {
-        if (st === "hidden") return 0
+        if (st === "hidden") return parked ? Math.round(pillH * 0.24) + padH * 2 : 0
         if (compact) return pillH * 2.6
         return Math.min(maxW, content.implicitWidth + padH * 2)
     }
@@ -192,6 +197,19 @@ Item {
                         }
                     }
                 }
+            }
+
+            // the parked dot: no sessions (or no daemon)
+            Rectangle {
+                id: idleDot
+                visible: pillRoot.parked
+                width: Math.round(pillRoot.pillH * 0.24)
+                height: width
+                radius: width / 2
+                anchors.verticalCenter: parent.verticalCenter
+                color: pillRoot.theme ? pillRoot.theme.ink : "gray"
+                opacity: hitArea.containsMouse ? 0.7 : 0.3
+                Behavior on opacity { NumberAnimation { duration: 200 } }
             }
 
             // one dot per session
@@ -419,13 +437,29 @@ Item {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: if (pillRoot.ctl) pillRoot.ctl.expanded = !pillRoot.ctl.expanded
+        onClicked: pillRoot.toggle()
+        onContainsMouseChanged: if (pillRoot.ctl) pillRoot.ctl.pillHovered = containsMouse
         onEntered: if (pillRoot.ctl && pillRoot.ctl.openOnHover && !pillRoot.ctl.expanded) hoverTimer.restart()
         onExited: hoverTimer.stop()
         Timer {
             id: hoverTimer
             interval: pillRoot.ctl ? Math.max(0, pillRoot.ctl.hoverDelay) : 400
-            onTriggered: if (pillRoot.ctl && hitArea.containsMouse && pillRoot.st !== "hidden") pillRoot.ctl.expanded = true
+            onTriggered: if (pillRoot.ctl && hitArea.containsMouse && !pillRoot.ctl.expanded) pillRoot.ctl.peekOpen = true
         }
     }
+
+    function toggle() {
+        if (!ctl) return
+        ctl.peekOpen = false
+        ctl.expanded = !ctl.expanded
+    }
+
+    // keyboard: the panel can focus widgets; Enter or Space opens the card
+    activeFocusOnTab: true
+    Accessible.role: Accessible.Button
+    Accessible.name: ctl ? ctl.toolTipMainText || "cc-pill" : "cc-pill"
+    Accessible.description: ctl ? ctl.toolTipSubText : ""
+    Keys.onReturnPressed: toggle()
+    Keys.onEnterPressed: toggle()
+    Keys.onSpacePressed: toggle()
 }

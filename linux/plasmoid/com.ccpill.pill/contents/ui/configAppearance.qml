@@ -134,42 +134,42 @@ KCM.SimpleKCM {
             enabled: page.customColors
             color: page.cfg_textColor
             showAlphaChannel: true
-            onColorChanged: page.cfg_textColor = color
+            onColorChanged: if (!Qt.colorEqual(color, page.cfg_textColor)) page.cfg_textColor = color
         }
         KQuickControls.ColorButton {
             Kirigami.FormData.label: "Accent (working, voice):"
             enabled: page.customColors
             color: page.cfg_accentColor
             showAlphaChannel: true
-            onColorChanged: page.cfg_accentColor = color
+            onColorChanged: if (!Qt.colorEqual(color, page.cfg_accentColor)) page.cfg_accentColor = color
         }
         KQuickControls.ColorButton {
             Kirigami.FormData.label: "Needs you:"
             enabled: page.customColors
             color: page.cfg_attentionColor
             showAlphaChannel: true
-            onColorChanged: page.cfg_attentionColor = color
+            onColorChanged: if (!Qt.colorEqual(color, page.cfg_attentionColor)) page.cfg_attentionColor = color
         }
         KQuickControls.ColorButton {
             Kirigami.FormData.label: "Done:"
             enabled: page.customColors
             color: page.cfg_doneColor
             showAlphaChannel: true
-            onColorChanged: page.cfg_doneColor = color
+            onColorChanged: if (!Qt.colorEqual(color, page.cfg_doneColor)) page.cfg_doneColor = color
         }
         KQuickControls.ColorButton {
             Kirigami.FormData.label: "Capsule fill:"
             enabled: page.customColors
             color: page.cfg_backgroundColor
             showAlphaChannel: true
-            onColorChanged: page.cfg_backgroundColor = color
+            onColorChanged: if (!Qt.colorEqual(color, page.cfg_backgroundColor)) page.cfg_backgroundColor = color
         }
         KQuickControls.ColorButton {
             Kirigami.FormData.label: "Border:"
             enabled: page.customColors
             color: page.cfg_borderColor
             showAlphaChannel: true
-            onColorChanged: page.cfg_borderColor = color
+            onColorChanged: if (!Qt.colorEqual(color, page.cfg_borderColor)) page.cfg_borderColor = color
         }
 
         QQC2.CheckBox {

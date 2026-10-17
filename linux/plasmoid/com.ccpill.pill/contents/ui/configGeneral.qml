@@ -12,6 +12,7 @@ KCM.SimpleKCM {
     property alias cfg_openOnHover: hoverCheck.checked
     property alias cfg_hoverDelay: delaySpin.value
     property alias cfg_hitPadding: hitSpin.value
+    property alias cfg_idleDot: idleCheck.checked
     property alias cfg_showCats: catsCheck.checked
 
     Kirigami.FormLayout {
@@ -37,7 +38,16 @@ KCM.SimpleKCM {
         QQC2.CheckBox {
             id: hoverCheck
             Kirigami.FormData.label: "Open the card:"
-            text: "when the pointer rests on the widget (a click always works)"
+            text: "peek when the pointer rests on the widget (a click always opens it)"
+        }
+
+        QQC2.Label {
+            text: "The peek takes no keyboard focus, so it never interrupts typing. Click for the full card with prompt fields."
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.fillWidth: true
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 26
         }
 
         QQC2.SpinBox {
@@ -66,6 +76,12 @@ KCM.SimpleKCM {
             opacity: 0.7
             wrapMode: Text.WordWrap
             Layout.fillWidth: true
+        }
+
+        QQC2.CheckBox {
+            id: idleCheck
+            Kirigami.FormData.label: "No sessions:"
+            text: "keep a faint dot so the widget stays findable and clickable"
         }
 
         Item { Kirigami.FormData.isSection: true; Kirigami.FormData.label: "Daemon" }

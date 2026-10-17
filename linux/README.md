@@ -10,6 +10,53 @@ cd cc-pill
 
 Then right-click your panel → **Add Widgets…** → search **cc-pill** and drop it in. The pill stays hidden until a Claude Code session starts.
 
+<p align="center">
+  <img src="docs/panel-full.png" alt="A Plasma top panel with the cc-pill widget centred between the pager and the system tray" width="100%">
+</p>
+
+<table align="center">
+  <tr>
+    <td align="center">
+      <img src="docs/panel-working.png" alt="Working: one dot per session and the current narration" width="310"><br>
+      <sub><b>working</b> · one dot per session, live narration in a fixed-width slot</sub>
+    </td>
+    <td align="center">
+      <img src="docs/panel-needs-you.png" alt="Needs you: amber dot and the words needs you in the scheme's neutral colour" width="310"><br>
+      <sub><b>needs you</b> · the scheme's neutral colour, a pulsing dot</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/bloom.png" alt="The briefing bloom: a window hanging under the panel with the whole spoken summary" width="380"><br>
+      <sub><b>briefing</b> · blooms off the panel, words lighting up with the voice</sub>
+    </td>
+    <td align="center">
+      <img src="docs/idle-dot.png" alt="No sessions: a single faint dot" width="310"><br>
+      <sub><b>no sessions</b> · a faint dot keeps it findable (or hide it entirely)</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/card.png" alt="The session card: rows with state, last briefing and replay, prompt, terminal buttons" width="380"><br>
+      <sub><b>the card</b> (click) · last briefing per session, replay, prompt, terminal, + NEW</sub>
+    </td>
+    <td align="center">
+      <img src="docs/peek.png" alt="The peek: the same card in a no-focus window on hover" width="380"><br>
+      <sub><b>the peek</b> (hover) · same card, takes no keyboard focus</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/look-porcelain.png" alt="Porcelain look: cream capsule, sun glyph" width="310"><br>
+      <sub><b>porcelain</b> · the macOS look, if you want it</sub>
+    </td>
+    <td align="center">
+      <img src="docs/look-custom.png" alt="Custom look: dark capsule, violet border, serif bold italic" width="310"><br>
+      <sub><b>custom</b> · your font, colours, capsule, border and corners</sub>
+    </td>
+  </tr>
+</table>
+
 ## Requirements
 
 - **KDE Plasma 6** (Wayland or X11), with `kpackagetool6`
@@ -95,9 +142,17 @@ its row, and the play button speaks it again.
 
 Right-click the widget → *Configure…* for three pages:
 
-- **General**: text width; activation (open the card on click, or when the
-  pointer rests on the widget for a delay you set; extra hit area around the
-  pill); the daemon port; the cats (off by default).
+<p align="center">
+  <img src="docs/settings-general.png" alt="General settings: text width, activation, idle dot, daemon port, cats" width="32%">
+  <img src="docs/settings-appearance.png" alt="Appearance settings: look, briefing, font, colours, capsule, border" width="32%">
+  <img src="docs/settings-placement.png" alt="Placement settings: panel edge, position, Move button" width="32%">
+</p>
+
+- **General**: text width; activation (a click opens the card; optionally a
+  pointer resting on the widget for a delay you set opens a *peek*, the same
+  card in a window that takes no keyboard focus, so it never interrupts
+  typing; extra hit area around the pill); whether a faint dot stays when
+  there are no sessions; the daemon port; the cats (off by default).
 - **Appearance**: the look (**Plasma**, or **Porcelain**: the macOS cc-pill
   pill, cream by day, kiln at night, sun and moon, tapping paw); how a
   briefing shows (bloom window, widen the pill, crawl in the slot); the font (the
@@ -150,7 +205,8 @@ Everything else (`name`, `voice`, `speed`, `volume`, `home_repo`, `permission_mo
 | Control | What it does |
 | --- | --- |
 | <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> (your choice) | Ask mode: a prompt box; <kbd>Enter</kbd> starts a detached session that is tracked and briefed. |
-| Hover the pill | Tooltip with the session summary, or the card itself with *open on hover* in the settings. |
+| Hover the pill | Tooltip with the session summary, or with *peek on hover* the card itself in a no-focus window. |
+| <kbd>Enter</kbd> / <kbd>Space</kbd> on the focused widget | Opens the card (the panel can focus widgets from the keyboard). |
 | Click the pill | The card: one row per session with replay-briefing, send-a-prompt and open-terminal buttons, `+ NEW`, and the mute toggle. |
 | `<yourname>` in the shell | `mute`, `on`, `stop`, `last`, `say <text>`, `voice <name>`, `vol`, `speed`. |
 
@@ -163,7 +219,7 @@ tail -f ~/.cc-pill/pill.log               # every event it applied
 tail -f <install>/voice/spool/voice.log   # what the voice said, or why it stayed quiet
 ```
 
-- **Widget shows nothing.** It hides itself when there are no sessions. Start `claude` somewhere; a dot appears. If the tooltip says the daemon isn't running, see the service status above.
+- **Widget shows only a faint dot.** No sessions yet. Start `claude` somewhere; the dot takes the session's colour. (Untick *No sessions: keep a faint dot* to hide it entirely.) If the tooltip says the daemon isn't running, see the service status above.
 - **Widget port mismatch.** Right-click the widget → Configure → Daemon port must equal `daemon_port` in the config.
 - **Card buttons do nothing for your own sessions.** Prompt-send and open-terminal need the session inside tmux: accept the tmux wrapper in setup, then open a new shell.
 - **No audio.** `pw-play`, `paplay` or `aplay` must be on the PATH of the voice worker (which runs from the Claude Code hook, in your login environment).

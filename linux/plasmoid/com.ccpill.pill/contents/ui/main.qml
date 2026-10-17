@@ -7,6 +7,7 @@
  * representation is the session card popup (Card.qml).
  */
 import QtQuick
+import QtQuick.Layouts
 import org.kde.plasma.plasmoid
 import org.kde.plasma.core as PlasmaCore
 import org.kde.kirigami as Kirigami
@@ -25,6 +26,7 @@ PlasmoidItem {
     readonly property bool openOnHover: Plasmoid.configuration.openOnHover
     readonly property int hoverDelay: Plasmoid.configuration.hoverDelay
     readonly property int hitPadding: Plasmoid.configuration.hitPadding
+    readonly property bool idleDot: Plasmoid.configuration.idleDot
     // "popup": the briefing blooms in a window hanging off the panel (the
     // Mac bloom, outward instead of sideways); "widen": the pill grows to
     // fit it; "slot": it crawls inside the fixed text slot.
@@ -110,12 +112,53 @@ PlasmoidItem {
     preferredRepresentation: compactRepresentation
     hideOnWindowDeactivate: true
 
-    // no tooltip while the bloom hangs there: both texts empty disables it
-    toolTipMainText: showBloom ? ""
+    // ---------------------------------------------------------------- peek
+    // Hovering (when enabled) opens a peek: the card in a tooltip-type window
+    // that takes no keyboard focus, so a pointer resting on the pill never
+    // interrupts typing in the terminal. A click opens the real card, which
+    // takes focus so prompts can be typed. The peek closes once the pointer
+    // has left both the pill and the peek.
+
+    property bool pillHovered: false
+    property bool peekHovered: false
+    property bool peekOpen: false
+    readonly property bool showPeek: peekOpen && !expanded && compactRepresentationItem !== null
+
+    onExpandedChanged: if (expanded) peekOpen = false
+
+    Timer {
+        interval: 600
+        running: root.peekOpen && !root.pillHovered && !root.peekHovered
+        onTriggered: root.peekOpen = false
+    }
+
+    PlasmaCore.Dialog {
+        id: peekDialog
+        type: PlasmaCore.Dialog.Tooltip
+        location: Plasmoid.location
+        visualParent: root.compactRepresentationItem
+        hideOnWindowDeactivate: false
+        visible: root.showPeek
+        mainItem: Item {
+            width: peekCard.width
+            height: peekCard.height
+            HoverHandler { onHoveredChanged: root.peekHovered = hovered }
+            Card {
+                id: peekCard
+                ctl: root
+                peek: true
+                width: Kirigami.Units.gridUnit * 21
+                height: Layout.preferredHeight
+            }
+        }
+    }
+
+    // no tooltip while the bloom or the peek hangs there: both texts empty disables it
+    toolTipMainText: (showBloom || showPeek) ? ""
                    : online ? (sessionCount === 0 ? "cc-pill" : sessionCount + (sessionCount === 1 ? " Claude session" : " Claude sessions"))
                             : "cc-pill daemon not running"
     toolTipSubText: {
-        if (showBloom) return ""
+        if (showBloom || showPeek) return ""
         if (!online) return "systemctl --user status cc-pill"
         if (sessionCount === 0) return "Waiting for a Claude Code session"
         const parts = []
@@ -223,7 +266,7 @@ PlasmoidItem {
     }
 
     readonly property bool showBloom: online && briefingMode === "popup" && briefing !== null
-                                      && !expanded && compactRepresentationItem !== null
+                                      && !expanded && !peekOpen && compactRepresentationItem !== null
 
     // The bloom: a tooltip-type window (takes no focus) hanging off the pill
     // on the far side of the panel, holding the whole briefing.

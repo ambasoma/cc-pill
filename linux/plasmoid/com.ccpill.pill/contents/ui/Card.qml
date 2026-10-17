@@ -15,6 +15,8 @@ Item {
     id: card
 
     property var ctl
+    // peek: shown in a no-focus window on hover; nothing that needs typing
+    property bool peek: false
     readonly property var pd: ctl ? ctl.pillData : null
     readonly property QtObject theme: ctl ? ctl.theme : null
     readonly property bool online: ctl ? ctl.online : false
@@ -62,6 +64,7 @@ Item {
             }
             Item { Layout.fillWidth: true }
             PlasmaComponents3.ToolButton {
+                visible: !card.peek
                 text: card.asking ? "cancel" : "+ NEW"
                 flat: true
                 enabled: card.online
@@ -164,6 +167,7 @@ Item {
                         PlasmaComponents3.ToolTip.visible: hovered
                     }
                     PlasmaComponents3.ToolButton {
+                        visible: !card.peek
                         icon.name: "mail-message-new"
                         checked: card.inputFor === row.modelData.id
                         onClicked: {
@@ -254,6 +258,15 @@ Item {
                 font: Kirigami.Theme.smallFont
                 onClicked: card.ctl.post("/mute", {})
             }
+        }
+
+        PlasmaComponents3.Label {
+            visible: card.peek
+            text: "Click the pill to type a prompt or start a session."
+            font: Kirigami.Theme.smallFont
+            opacity: 0.5
+            Layout.fillWidth: true
+            elide: Text.ElideRight
         }
 
         PlasmaComponents3.Label {
