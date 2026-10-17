@@ -9,8 +9,24 @@ KCM.SimpleKCM {
 
     property alias cfg_port: portSpin.value
     property alias cfg_showCats: catsCheck.checked
+    property string cfg_style
 
     Kirigami.FormLayout {
+        QQC2.ComboBox {
+            id: styleCombo
+            Kirigami.FormData.label: "Look:"
+            textRole: "text"
+            valueRole: "value"
+            model: [
+                { text: "Plasma · follows your colour scheme and panel font", value: "plasma" },
+                { text: "Porcelain · the macOS cc-pill pill", value: "porcelain" }
+            ]
+            Component.onCompleted: currentIndex = Math.max(0, indexOfValue(page.cfg_style))
+            onActivated: page.cfg_style = currentValue
+        }
+
+        Item { Kirigami.FormData.isSection: true }
+
         QQC2.SpinBox {
             id: portSpin
             Kirigami.FormData.label: "Daemon port:"
@@ -34,7 +50,7 @@ KCM.SimpleKCM {
         QQC2.CheckBox {
             id: catsCheck
             Kirigami.FormData.label: "Cats:"
-            text: "Run laps across the pill while Claude works"
+            text: "Charlie and Lily run laps while Claude works"
         }
     }
 }

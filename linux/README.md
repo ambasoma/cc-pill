@@ -69,6 +69,18 @@ curl -s -H 'X-CC-Pill: 1' localhost:17357/state | jq .pill
 
 The same state is mirrored to `~/.cc-pill/state.json` on every change, for status bars and scripts that would rather read a file.
 
+## Look
+
+By default the widget looks like any other panel widget: the panel's font and
+text colour, the colour scheme's accent for working sessions, its "neutral"
+colour (orange in Breeze) for a session that needs you, its "positive" colour
+for done, a Breeze check or warning at the end of a turn, and no capsule.
+Switching the Plasma colour scheme restyles it instantly.
+
+Right-click the widget → *Configure…* to pick **Porcelain** instead, the macOS
+cc-pill look (cream pill by day, kiln at night, sun and moon glyph, tapping
+paw), and to let the cats run laps while Claude works (off by default).
+
 ## Config
 
 `~/.cc-pill/config.json`, written by setup. Linux-specific keys:

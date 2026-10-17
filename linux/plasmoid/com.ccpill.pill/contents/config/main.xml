@@ -9,9 +9,13 @@
       <label>Localhost port the cc-pill daemon listens on.</label>
       <default>17357</default>
     </entry>
+    <entry name="style" type="String">
+      <label>Look: "plasma" follows the Plasma colour scheme; "porcelain" is the macOS cc-pill look.</label>
+      <default>plasma</default>
+    </entry>
     <entry name="showCats" type="Bool">
-      <label>Let the cats run laps while Claude works.</label>
-      <default>true</default>
+      <label>Let the cats (Charlie and Lily) run laps while Claude works.</label>
+      <default>false</default>
     </entry>
   </group>
 </kcfg>

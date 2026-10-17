@@ -32,20 +32,25 @@ Item {
 
     // ------------------------------------------------------------ sizing
 
+    readonly property bool nativeLook: theme ? theme.nativeLook : true
     readonly property real pillH: Math.max(16, Math.min(height - 2, 27))
-    readonly property real padH: Math.round(pillH * 0.4)
+    readonly property real padH: nativeLook ? Kirigami.Units.smallSpacing * 1.5 : Math.round(pillH * 0.4)
     readonly property real maxW: 430
 
     readonly property real targetW: {
         if (st === "hidden") return 0
         if (compact) return pillH * 2.6
-        if (st === "idle") return 70
+        if (st === "idle" && !nativeLook) return 70
         return Math.min(maxW, content.implicitWidth + padH * 2)
     }
 
     property real animW: targetW
     Behavior on animW {
-        NumberAnimation { duration: 420; easing.type: Easing.OutBack; easing.overshoot: 0.45 }
+        NumberAnimation {
+            duration: pillRoot.nativeLook ? 250 : 420
+            easing.type: pillRoot.nativeLook ? Easing.OutCubic : Easing.OutBack
+            easing.overshoot: 0.45
+        }
     }
 
     Layout.minimumWidth: vertical ? -1 : animW
@@ -75,7 +80,8 @@ Item {
         if (!b.silent && b.duration > 0) {
             shown = Math.min(words.length, Math.ceil(Math.min(1, ctl.elapsed(b.started) / b.duration) * words.length))
         }
-        const dim = blend(theme.bg, theme.ink, 0.2).toString()
+        const dim = theme.nativeLook ? Qt.rgba(theme.ink.r, theme.ink.g, theme.ink.b, 0.35).toString()
+                                 : blend(theme.bg, theme.ink, 0.2).toString()
         return words.map((w, i) => i < shown ? esc(w) : '<font color="' + dim + '">' + esc(w) + '</font>').join(" ")
     }
 
@@ -118,9 +124,9 @@ Item {
             }
         }
 
-        // ember breathing behind the cats at night
+        // ember breathing behind the cats at night (porcelain only)
         Rectangle {
-            visible: pillRoot.theme && pillRoot.theme.night && pillRoot.st === "working"
+            visible: pillRoot.theme && !pillRoot.nativeLook && pillRoot.theme.night && pillRoot.st === "working"
             anchors.centerIn: parent
             width: parent.width * 0.7
             height: parent.height * 1.4
@@ -144,13 +150,13 @@ Item {
             anchors.centerIn: parent
             spacing: Math.round(pillRoot.pillH * 0.22)
 
-            // sun by day, crescent moon at night
+            // sun by day, crescent moon at night (porcelain only)
             Canvas {
                 id: glyph
                 width: Math.round(pillRoot.pillH * 0.52)
                 height: width
                 anchors.verticalCenter: parent.verticalCenter
-                visible: pillRoot.st !== "speaking"
+                visible: pillRoot.st !== "speaking" && !pillRoot.nativeLook
                 readonly property bool night: pillRoot.theme ? pillRoot.theme.night : false
                 readonly property color gold: pillRoot.theme ? pillRoot.theme.gold : "#A88117"
                 onNightChanged: requestPaint()
@@ -193,7 +199,7 @@ Item {
                     delegate: Rectangle {
                         id: dot
                         required property var modelData
-                        width: Math.round(pillRoot.pillH * 0.18)
+                        width: Math.round(pillRoot.pillH * (pillRoot.nativeLook ? 0.24 : 0.18))
                         height: width
                         radius: width / 2
                         anchors.verticalCenter: parent.verticalCenter
@@ -219,9 +225,15 @@ Item {
                 visible: !pillRoot.compact && text.length > 0
                 text: pillRoot.labelText
                 textFormat: pillRoot.st === "speaking" ? Text.StyledText : Text.PlainText
-                color: pillRoot.theme ? pillRoot.theme.ink : "black"
-                font.pixelSize: Math.round(pillRoot.pillH * (pillRoot.st === "speaking" ? 0.46 : 0.42))
-                font.weight: Font.Medium
+                // native look: the panel's text colour, attention colour while a session waits
+                color: !pillRoot.theme ? "black"
+                       : (pillRoot.nativeLook && pillRoot.st === "waiting") ? pillRoot.theme.amber : pillRoot.theme.ink
+                // native look: the panel font as-is; porcelain: sized to the pill
+                readonly property font porcelainFont: Qt.font({
+                    pixelSize: Math.round(pillRoot.pillH * (pillRoot.st === "speaking" ? 0.46 : 0.42)),
+                    weight: Font.Medium
+                })
+                font: pillRoot.nativeLook ? Kirigami.Theme.defaultFont : porcelainFont
                 elide: Text.ElideRight
                 maximumLineCount: 1
                 width: Math.min(metrics.width + 2, pillRoot.maxW - pillRoot.padH * 2 - (waves.visible ? waves.width + content.spacing : 0))
@@ -229,9 +241,9 @@ Item {
                 Behavior on color { ColorAnimation { duration: 600 } }
             }
 
-            // the paw, tapping from the right while a session needs you
+            // the paw, tapping from the right while a session needs you (porcelain)
             Paw {
-                visible: pillRoot.st === "waiting" && !pillRoot.compact
+                visible: pillRoot.st === "waiting" && !pillRoot.compact && !pillRoot.nativeLook
                 height: Math.round(pillRoot.pillH * 0.5)
                 anchors.verticalCenter: parent.verticalCenter
                 color: pillRoot.theme ? pillRoot.theme.amber : "#B26E1C"
@@ -262,10 +274,21 @@ Item {
                 }
             }
 
-            // turn-end moment: a cat sits for a star, or walks off sad
+            // turn-end moment without the cats: a plain Breeze check or warning
+            Kirigami.Icon {
+                visible: pillRoot.moment !== null && !pillRoot.compact && !(pillRoot.ctl && pillRoot.ctl.showCats)
+                source: pillRoot.moment && pillRoot.moment.kind === "sad" ? "dialog-warning" : "checkmark"
+                color: pillRoot.theme ? (pillRoot.moment && pillRoot.moment.kind === "sad" ? pillRoot.theme.amber : pillRoot.theme.sage) : "gray"
+                isMask: true
+                width: Math.round(pillRoot.pillH * 0.6)
+                height: width
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            // turn-end moment with the cats: one sits for a star, or walks off sad
             Item {
                 id: momentBox
-                visible: pillRoot.moment !== null && !pillRoot.compact
+                visible: pillRoot.moment !== null && !pillRoot.compact && pillRoot.ctl && pillRoot.ctl.showCats
                 width: pillRoot.moment && pillRoot.moment.kind === "sad" ? 110 : 64
                 height: pillRoot.pillH
                 anchors.verticalCenter: parent.verticalCenter

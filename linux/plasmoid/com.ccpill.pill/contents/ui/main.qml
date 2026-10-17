@@ -18,6 +18,9 @@ PlasmoidItem {
 
     readonly property int port: Plasmoid.configuration.port
     readonly property bool showCats: Plasmoid.configuration.showCats
+    // "plasma": follow the Plasma colour scheme, font and icons like any other
+    // panel widget (default). "porcelain": the macOS cc-pill look.
+    readonly property bool nativeLook: Plasmoid.configuration.style !== "porcelain"
     readonly property string base: "http://127.0.0.1:" + port
 
     property bool online: false
@@ -46,21 +49,25 @@ PlasmoidItem {
     readonly property int workingCount: pillData.sessions.filter(s => s.state === "working").length
 
     // ------------------------------------------------------------- theme
-    // Porcelain by day, kiln at night, following the Plasma colour scheme.
+    // Native: the panel's own colours (text, highlight, neutral, positive).
+    // Porcelain: cc-pill's porcelain by day and kiln at night, picked from
+    // the colour scheme's luminance.
 
     readonly property color schemeBg: Kirigami.Theme.backgroundColor
     readonly property bool night: (0.2126 * schemeBg.r + 0.7152 * schemeBg.g + 0.0722 * schemeBg.b) < 0.5
 
     readonly property QtObject theme: QtObject {
+        readonly property bool nativeLook: root.nativeLook
         readonly property bool night: root.night
-        readonly property color bg: root.night ? "#181D0E" : "#F8F3E8"
-        readonly property color ink: root.night ? "#EFE8D3" : "#2A2620"
-        readonly property color line: root.night ? Qt.rgba(1, 1, 1, 0.06) : Qt.rgba(0.165, 0.149, 0.125, 0.16)
-        readonly property color gold: root.night ? "#D9B44A" : "#A88117"
-        readonly property color amber: root.night ? "#D9913A" : "#B26E1C"
-        readonly property color olive: root.night ? "#A9BD66" : "#5F7036"
-        readonly property color sage: "#7FB39D"
-        readonly property real gloss: root.night ? 0.07 : 0.38
+        readonly property color bg: root.nativeLook ? "transparent" : (root.night ? "#181D0E" : "#F8F3E8")
+        readonly property color ink: root.nativeLook ? Kirigami.Theme.textColor : (root.night ? "#EFE8D3" : "#2A2620")
+        readonly property color line: root.nativeLook ? "transparent"
+                                                  : (root.night ? Qt.rgba(1, 1, 1, 0.06) : Qt.rgba(0.165, 0.149, 0.125, 0.16))
+        readonly property color gold: root.nativeLook ? Kirigami.Theme.highlightColor : (root.night ? "#D9B44A" : "#A88117")
+        readonly property color amber: root.nativeLook ? Kirigami.Theme.neutralTextColor : (root.night ? "#D9913A" : "#B26E1C")
+        readonly property color olive: root.nativeLook ? Kirigami.Theme.highlightColor : (root.night ? "#A9BD66" : "#5F7036")
+        readonly property color sage: root.nativeLook ? Kirigami.Theme.positiveTextColor : "#7FB39D"
+        readonly property real gloss: root.nativeLook ? 0 : (root.night ? 0.07 : 0.38)
     }
 
     // --------------------------------------------------------- plasmoid
