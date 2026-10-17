@@ -46,6 +46,35 @@ def tool_label(payload):
     return ""  # skip bookkeeping tools (tasks, skills, etc.)
 
 
+SHELLS = {"sh", "bash", "dash", "zsh", "fish", "ksh"}
+
+
+def _proc(pid):
+    """(name, parent pid) of a process from /proc, or None where there is no
+    /proc (macOS), where the hook's parent is already the claude process."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read()
+        name = stat[stat.index("(") + 1:stat.rindex(")")]
+        parent = int(stat[stat.rindex(")") + 2:].split()[1])
+        return os.path.basename(name), parent
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def claude_pid(proc=_proc):
+    """The pid the pill watches to know the session is alive. On Linux, Claude
+    Code runs hooks through /bin/sh, so the direct parent is a shell that
+    exits as soon as we do; walk up past shells to the claude process."""
+    pid = os.getppid()
+    for _ in range(4):
+        info = proc(pid)
+        if not info or info[0] not in SHELLS or info[1] <= 1:
+            break
+        pid = info[1]
+    return pid
+
+
 def main():
     if os.environ.get("PILL_INNER"):
         return
@@ -64,7 +93,7 @@ def main():
         "sid": payload.get("session_id", ""),
         "cwd": cwd,
         "repo": os.path.basename(cwd.rstrip("/")) or "?",
-        "pid": os.getppid(),  # the claude process itself
+        "pid": claude_pid(),  # the claude process itself
         "remote": bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")),
     }
     if mode == "notify":
