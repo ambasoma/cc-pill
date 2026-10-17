@@ -292,9 +292,19 @@ banner
 # ---------- dependencies ----------
 head_ "Checking dependencies" "Plasma 6, python3, tmux, jq, claude CLI (gum optional)"
 command -v plasmashell >/dev/null || die "plasmashell not found: this setup targets KDE Plasma 6"
-PLASMA_MAJOR=$(plasmashell --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo 0)
-[ "${PLASMA_MAJOR:-0}" -ge 6 ] || die "KDE Plasma 6 or newer required (found plasmashell $PLASMA_MAJOR)"
 command -v kpackagetool6 >/dev/null || die "kpackagetool6 not found ($(pkg_hint plasma-workspace))"
+# plasmashell is a Qt app: `--version` needs a display and crashes without one
+# (an ssh shell, for instance). kpackagetool6 only ships with Frameworks 6, so
+# a Plasma 6 install is already implied; the version read is a sanity check.
+if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+  PLASMA_MAJOR=$(plasmashell --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)
+  if [ -n "$PLASMA_MAJOR" ] && [ "$PLASMA_MAJOR" -lt 6 ]; then
+    die "KDE Plasma 6 or newer required (found plasmashell $PLASMA_MAJOR)"
+  fi
+  [ -n "$PLASMA_MAJOR" ] || warn "could not read the plasmashell version; continuing"
+else
+  warn "no display in this shell: skipping the plasmashell version check"
+fi
 command -v python3 >/dev/null || die "python3 not found ($(pkg_hint python3))"
 python3 -c "import venv" 2>/dev/null || die "python3 venv module missing ($(pkg_hint python3-venv))"
 command -v claude >/dev/null || die "claude CLI not found (install Claude Code first)"

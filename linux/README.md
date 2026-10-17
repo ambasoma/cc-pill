@@ -112,7 +112,10 @@ tail -f <install>/voice/spool/voice.log   # what the voice said, or why it staye
 - **No voice input in ask mode.** Apple's dictation has no drop-in equivalent; ask mode is typed. Whisper-based dictation is a candidate for a later version.
 - **No notch mode.** The pill lives in the panel; the panel's height sets the pill's height.
 - **Hover does not open the card.** Plasma popups open on click; hover shows the tooltip.
-- The daemon and widget were written and unit-tested on macOS first. See the QA checklist in the project tracker before relying on it.
+- Verified so far in a Multipass VM (Ubuntu 26.04, Plasma 6.6, Frameworks 6.24) with `plasmoidviewer` under Xvfb and the real
+  `linux/setup.sh`: every pill state, both colour schemes, the card and its actions, the systemd service, hooks and hotkey
+  registration. Not yet exercised: a real panel in a live plasmashell session (panel heights, the Wayland global shortcut)
+  and audio playback and ducking. See the QA checklist in the project tracker.
 
 ## Developing
 

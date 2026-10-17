@@ -64,6 +64,13 @@ Canvas {
         ctx.closePath()
     }
 
+    // Limbs are body-coloured strokes with the thin outline around them, like
+    // the Swift rounded rects: without it Lily's white legs vanish on porcelain.
+    function limb(ctx, w, c) {
+        ctx.strokeStyle = c.outline; ctx.lineWidth = w + 1.2; ctx.stroke()
+        ctx.strokeStyle = c.body; ctx.lineWidth = w; ctx.stroke()
+    }
+
     onPaint: {
         const ctx = getContext("2d")
         ctx.reset()
@@ -89,25 +96,30 @@ Canvas {
         ctx.translate(0, bob + (sad ? 0.6 : 0))
 
         // legs: back pair and front pair swing in opposition
-        ctx.strokeStyle = c.body
-        ctx.lineWidth = 1.7
         const legs = [[11.5, 1], [14.5, -1], [20.5, -1], [23.5, 1]]
         for (let i = 0; i < legs.length; i++) {
             const x = legs[i][0]
             const a = Math.sin(ph + (i < 2 ? 0 : Math.PI)) * swing * legs[i][1]
+            const ex = x + Math.sin(a) * 4.2, ey = 12.3 + Math.cos(a) * 4.2
             ctx.beginPath()
             ctx.moveTo(x, 12.3)
-            ctx.lineTo(x + Math.sin(a) * 4.2, 12.3 + Math.cos(a) * 4.2)
-            ctx.stroke()
+            ctx.lineTo(ex, ey)
+            limb(ctx, 1.7, c)
+            if (!c.lily) {   // Charlie's white mitts
+                ctx.strokeStyle = c.white; ctx.lineWidth = 1.1
+                ctx.beginPath()
+                ctx.moveTo(x + (ex - x) * 0.7, 12.3 + (ey - 12.3) * 0.7)
+                ctx.lineTo(ex, ey)
+                ctx.stroke()
+            }
         }
 
         // tail
-        ctx.lineWidth = 1.6
         ctx.beginPath()
         ctx.moveTo(8.8, 10.2)
         if (sad) ctx.quadraticCurveTo(5.2, 12.8, 3.4, 15.6)
         else ctx.quadraticCurveTo(4.4, 8.2 + Math.sin(ph * 0.5) * 0.6, 3.2, 3.4)
-        ctx.stroke()
+        limb(ctx, 1.6, c)
 
         // body
         ellipse(ctx, 17, 10.4, 8.6, 4.3)
@@ -152,11 +164,10 @@ Canvas {
 
     function drawSitting(ctx, c) {
         // tail curled around the front paws
-        ctx.strokeStyle = c.body; ctx.lineWidth = 1.6
         ctx.beginPath()
         ctx.moveTo(16.2, 15.6)
         ctx.quadraticCurveTo(9.6, 17.4, 10.2, 13.2)
-        ctx.stroke()
+        limb(ctx, 1.6, c)
 
         // body (upright) and chest
         ellipse(ctx, 19.2, 11.2, 5.2, 5.6)
@@ -167,9 +178,8 @@ Canvas {
             ctx.fillStyle = c.white; ctx.fill()
         }
         // front legs
-        ctx.strokeStyle = c.lily ? c.white : c.body; ctx.lineWidth = 1.7
-        ctx.beginPath(); ctx.moveTo(17.6, 13.2); ctx.lineTo(17.6, 16.6); ctx.stroke()
-        ctx.beginPath(); ctx.moveTo(20.8, 13.2); ctx.lineTo(20.8, 16.6); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(17.6, 13.2); ctx.lineTo(17.6, 16.6); limb(ctx, 1.7, c)
+        ctx.beginPath(); ctx.moveTo(20.8, 13.2); ctx.lineTo(20.8, 16.6); limb(ctx, 1.7, c)
 
         // head and ears
         const hx = 19.6, hy = 5.4
