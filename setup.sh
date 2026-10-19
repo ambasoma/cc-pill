@@ -419,11 +419,25 @@ if ui_confirm "Add the claude tmux wrapper to ~/.zshrc?" "y"; then
   if ! grep -q "cc-pill claude wrapper" ~/.zshrc 2>/dev/null; then
     cat >> ~/.zshrc <<'ZRC'
 
-# --- cc-pill claude wrapper: interactive claude runs inside tmux so the
-# pill can target it. Scripted calls and in-tmux runs pass straight through.
+# --- cc-pill claude wrapper: a fresh interactive claude runs inside tmux so the
+# pill can target it. Scripted calls, subcommands and in-tmux runs pass straight
+# through.
+#
+# Known issue: `claude --resume`/`--continue` inside a fresh tmux pane quits on
+# startup to a bare "[exited]" -- claude reads its own terminal-capability probe
+# replies (DA/OSC/colour-scheme) as input during the resume load. With tmux and
+# a terminal that answers those probes (e.g. Ghostty) it fails every time and
+# does NOT recover on retry; bare `claude` and a direct, non-tmux resume are
+# unaffected. It is an upstream claude bug. The pane-hold below at least shows
+# the exit instead of a silent close.
 claude() {
+  # Pass straight through (no tmux) for: pill/inner calls, already in tmux, a
+  # non-tty (piped) invocation, print mode, or any non-interactive subcommand /
+  # one-shot flag -- these print and exit, so a throwaway tmux session would eat
+  # their output before you can see it.
   if [[ -n "$PILL_INNER" || -n "$TMUX" || ! -t 0 || ! -t 1 ]] \
-     || [[ " $* " == *" -p "* || " $* " == *" --print "* ]]; then
+     || [[ " $* " == *" -p "* || " $* " == *" --print "* ]] \
+     || [[ "$1" == (agents|attach|auth|auto-mode|config|doctor|gateway|help|import|install|logs|mcp|migrate-installer|plugin|plugins|project|respawn|rm|setup-token|stop|kill|ultrareview|update|upgrade|--version|--help|-h) ]]; then
     command claude "$@"
     return
   fi
@@ -431,13 +445,20 @@ claude() {
   base="${base%-}"
   local name="$base" n=2
   while tmux has-session -t "=$name" 2>/dev/null; do
-    if [[ "$(tmux display-message -p -t "=$name" '#{session_attached}')" == "0" ]]; then
+    # Reuse an existing detached session only for a bare `claude` (no args). With
+    # explicit args -- a prompt, flags -- start a fresh session so the args are
+    # honored instead of silently dropped on reattach.
+    if [[ $# -eq 0 && "$(tmux display-message -p -t "=$name" '#{session_attached}')" == "0" ]]; then
       tmux attach -t "=$name"
       return
     fi
     name="$base-$((n++))"
   done
-  tmux new-session -s "$name" "command claude ${(q)@}"
+  # Note: ${(q)@} is inlined in the new-session argument (not via a local var --
+  # inside a scalar assignment zsh escapes the separator and claude sees the args
+  # joined into one). The `|| { ... }` holds the pane on a non-zero exit so a
+  # genuine error stays readable instead of collapsing to tmux's bare "[exited]".
+  tmux new-session -s "$name" "command claude ${(q)@} || { printf '\n[claude exited (code %s) - press Enter to close] ' \$?; read _ </dev/tty; }"
 }
 ZRC
     ok "wrapper added (open a new shell to use it)"
