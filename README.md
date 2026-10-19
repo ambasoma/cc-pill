@@ -170,6 +170,12 @@ Then remove the cc-pill hooks block from `~/.claude/settings.json`, the wrapper/
 - **Pill never appears.** Check `~/.cc-pill/pill.log`. Then look at `~/.cc-pill/events/`: files piling up means the app is not running; nothing arriving means the hooks are not registered, or the session predates them (restart the session).
 - **No speech.** `~/.cc-pill/config.json` needs `"enabled": true` (the `on` alias sets it). Voice not installed? `./setup.sh voice`.
 - **Ask mode says it can't start a session.** The app needs `tmux` and `claude` reachable from launchd; set `claude_bin` in the config if claude lives somewhere unusual.
+- **Claude Code runs inside an LXD container.** It works if the hook can write into the same `~/.cc-pill/events/` directory the pill watches on the host. The hook only writes files, so share that directory into the container (the container user's `$HOME` must resolve to the mounted path, or symlink `~/.cc-pill`):
+  ```sh
+  lxc config device add <container> ccpill disk \
+    source=$HOME/.cc-pill path=/home/<user>/.cc-pill shift=true
+  ```
+  Then install the hooks inside the container (`hooks/hook.py` plus the entries in the container's `~/.claude/settings.json`). Limitations: container PIDs mean nothing to the host, so the hook reports pid `0` when `$container` is set and those sessions are never auto-reaped (they clear on the `end` event); tmux adoption, open-terminal, and ask mode only see host sessions.
 - **Speak-a-prompt is a text field.** No microphone was detected, or speech permission was denied; the text fallback is intentional.
 
 </details>

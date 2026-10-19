@@ -64,7 +64,10 @@ def main():
         "sid": payload.get("session_id", ""),
         "cwd": cwd,
         "repo": os.path.basename(cwd.rstrip("/")) or "?",
-        "pid": os.getppid(),  # the claude process itself
+        # the claude process itself. Inside a container (LXD sets container=lxc)
+        # this PID means nothing to the host app, which would reap the session
+        # as dead, so report 0 ("unknown, never reap").
+        "pid": 0 if os.environ.get("container") else os.getppid(),
         "remote": bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY")),
     }
     if mode == "notify":
