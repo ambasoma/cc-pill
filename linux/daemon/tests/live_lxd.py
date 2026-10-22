@@ -199,7 +199,8 @@ class Rig:
         os.makedirs(cls.voice_jobs)
         fake_py = os.path.join(cls.voice, ".venv", "bin", "python")
         with open(fake_py, "w") as f:
-            f.write(f'#!/bin/sh\n# $1 = worker.py, $2 = the job\ncp "$2" "{cls.voice_jobs}/"\necho "$1" > "{cls.voice_jobs}/.worker"\n')
+            # like the real worker, it takes the job out of the spool
+            f.write(f'#!/bin/sh\n# $1 = worker.py, $2 = the job\nmv "$2" "{cls.voice_jobs}/"\necho "$1" > "{cls.voice_jobs}/.worker"\n')
         os.chmod(fake_py, 0o755)
         with open(os.path.join(data, "config.json"), "w") as f:
             json.dump({"daemon_port": PORT, "terminal": term, "name": "Itest",
@@ -315,6 +316,17 @@ class T1_Wiring(unittest.TestCase):
             capture_output=True, text=True).stdout.strip())
         self.assertEqual(sorted(cfg["containers"]), sorted(Rig.containers))
         self.assertEqual(len(set(cfg["containers"].values())), len(Rig.containers))
+
+    def test_config_with_tokens_is_private(self):
+        self.assertEqual(oct(os.stat(os.path.join(Rig.data, "config.json")).st_mode & 0o777), "0o600")
+
+    def test_merged_settings_keep_their_mode(self):
+        for c in Rig.containers:
+            with self.subTest(container=c):
+                orig = sh(c, "stat -c %a /root/.claude/settings.json 2>/dev/null || echo none").strip()
+                if orig == "none":
+                    continue
+                self.assertEqual(sh(c, f"stat -c %a {CT_HOME}/.claude/settings.json").strip(), orig)
 
     def test_existing_hooks_survive_the_merge(self):
         for c in Rig.containers:

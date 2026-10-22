@@ -61,6 +61,11 @@ MOMENT_FALLBACK = 6.0
 MOMENT_DURATION = {"star": 2.4, "sad": 3.0}
 TOAST_SECONDS = 3.0
 REAP_INTERVAL = 10.0
+# Spoken briefings for container sessions: one job per session per window,
+# and no more than this many waiting, whatever a container posts.
+BRIEF_WINDOW = 15.0
+BRIEF_QUEUE_MAX = 4
+ADDRS_TTL = 300.0
 
 # Claude Code 2.x pre-starts "spare" processes for background sessions, in
 # /tmp/cc-daemon-<uid>/<id>/spare, and moves one to its project when it is
@@ -116,7 +121,9 @@ class Config:
         self.port = int(port) if isinstance(port, int) and 1024 <= port <= 65535 else DEFAULT_PORT
         # LXD containers: the host's bridge address the containers post to,
         # and one token per container ({"web-dev": "<token>"}).
-        self.bridge_host = data.get("bridge_host") or ""
+        bh = data.get("bridge_host")
+        # The bridge listener is for the LXD bridge only, never every interface.
+        self.bridge_host = bh if isinstance(bh, str) and bh not in ("0.0.0.0", "::", "") else ""
         ct = data.get("containers")
         self.containers = {str(k): str(v) for k, v in ct.items() if v} if isinstance(ct, dict) else {}
         self.lxc_bin = data.get("lxc_bin") or shutil.which("lxc") or "/snap/bin/lxc"
@@ -142,6 +149,31 @@ def find_claude():
 
 # -------------------------------------------------------------- processes
 
+def user_path():
+    """PATH with the usual user bin dirs first: systemd user managers don't
+    always have ~/.local/bin, where Claude Code installs itself."""
+    return os.path.expanduser("~/.local/bin") + ":/usr/local/bin:" + os.environ.get("PATH", "/usr/bin:/bin")
+
+
+EVENT_STR = ("type", "sid", "repo", "cwd", "label", "msg", "ssh_client")
+
+
+def clean_event(evt):
+    """A container's event with every field the daemon reads coerced to
+    its type: a container can post anything."""
+    out = {k: (evt.get(k) if isinstance(evt.get(k), str) else "")[:4096] for k in EVENT_STR}
+    out["repo"] = out["repo"][:200] or "?"
+    pid = evt.get("pid")
+    out["pid"] = pid if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0 else 0
+    out["idle"] = evt.get("idle") is True
+    sp = evt.get("speech")
+    if isinstance(sp, dict):
+        out["speech"] = {"text": sp["text"] if isinstance(sp.get("text"), str) else "",
+                         "notification_type": sp["notification_type"]
+                         if isinstance(sp.get("notification_type"), str) else ""}
+    return out
+
+
 def run(args, timeout=8):
     """Run a command, returning (stdout+stderr, exit code). Never raises.
 
@@ -149,9 +181,7 @@ def run(args, timeout=8):
     UTF-8 locale for tmux. Its -F output is split on tabs: tmux 3.5 escapes
     other control characters (\x01 comes out as the text "\001").
     """
-    env = dict(os.environ)
-    extra = os.path.expanduser("~/.local/bin") + ":/usr/local/bin"
-    env["PATH"] = extra + ":" + env.get("PATH", "/usr/bin:/bin")
+    env = dict(os.environ, PATH=user_path())
     if not env.get("LANG"):
         env["LANG"] = "C.UTF-8"
     try:
@@ -300,6 +330,8 @@ class Store:
         self.host_pid = host_pid
         self.ancestors = ancestors
         self._local_addrs = local_addrs   # lazily from `ip addr`
+        self._local_addrs_at = clock() if local_addrs else 0.0
+        self._brief_last = {}             # (sid, mode) -> when a job was last queued
         self._pid_cache = {}              # (container, container pid) -> host pid
         self.lock = threading.RLock()
 
@@ -383,7 +415,7 @@ class Store:
 
     def apply(self, evt):
         with self.lock:
-            self._apply(evt)
+            return self._apply(evt)
 
     def apply_container(self, container, evt):
         """An event posted from inside an LXD container. Its pid is the
@@ -392,29 +424,39 @@ class Store:
         remote one."""
         if not isinstance(evt, dict) or not container:
             return
-        evt = dict(evt)
+        evt = clean_event(evt)
         evt["container"] = container
-        pid = evt.get("pid")
-        if isinstance(pid, int) and pid > 0:
-            key = (container, pid)
+        if evt["pid"]:
+            key = (container, evt["pid"])
             hp = self._pid_cache.get(key)
             if not hp or not self.alive(hp):
-                hp = self.host_pid(container, pid)
+                hp = self.host_pid(container, evt["pid"])
                 if hp:
                     self._pid_cache[key] = hp
             evt["pid"] = hp or 0
-        client = evt.pop("ssh_client", "") or ""
-        if client:
-            if self._local_addrs is None:
-                self._local_addrs = host_addresses(self.run)
-            evt["remote"] = client not in self._local_addrs
-        else:
-            evt["remote"] = False
+        client = evt.pop("ssh_client")
+        evt["remote"] = bool(client) and client not in self.local_addresses()
         speech = evt.pop("speech", None)
         with self.lock:
-            self._apply(evt)
-        if evt.get("type") in ("stop", "notify") and not evt["remote"]:
-            self.brief_container(container, evt, speech if isinstance(speech, dict) else {})
+            # A container speaks only for its own sessions.
+            s = self._find(evt["sid"])
+            if s is not None and s.container != container:
+                log(f"dropped {evt['type'] or 'event'} from {container} for a session of "
+                    f"{s.container or 'the host'} [{short(evt['sid'])}]")
+                return
+            accepted = self._apply(evt)
+        if accepted and evt.get("type") in ("stop", "notify") and not evt["remote"]:
+            self.brief_container(container, evt, speech or {})
+
+    def local_addresses(self):
+        """This host's addresses, re-read now and then (a VPN or the bridge
+        can come up after the daemon); an empty answer is never kept."""
+        now = self.clock()
+        if not self._local_addrs or now - self._local_addrs_at > ADDRS_TTL:
+            addrs = host_addresses(self.run)
+            if addrs:
+                self._local_addrs, self._local_addrs_at = addrs, now
+        return self._local_addrs or set()
 
     def brief_container(self, container, evt, speech):
         """Hand a container session's finished turn (or permission prompt) to
@@ -422,6 +464,28 @@ class Store:
         sessions: the container has no voice, no audio and no Claude login of
         its own for the summary. Its hook sent the text along."""
         if not self.voice_available() or self.voice_muted():
+            return False
+        now = self.clock()
+        key = (evt.get("sid") or "", evt.get("type"))
+        if now - self._brief_last.get(key, -BRIEF_WINDOW) < BRIEF_WINDOW:
+            log(f"briefing skipped: {container} [{short(key[0])}] spoke under {BRIEF_WINDOW:.0f}s ago")
+            return False
+        spool = os.path.join(self.config.speaker, "spool")
+        waiting = 0
+        try:
+            # A worker deletes its job as it starts; one that never started
+            # (a broken venv) leaves it. Only recent jobs count, so leftovers
+            # can't silence the voice for good.
+            for n in os.listdir(spool):
+                if n.startswith("job-"):
+                    try:
+                        waiting += time.time() - os.path.getmtime(os.path.join(spool, n)) < 120
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        if waiting >= BRIEF_QUEUE_MAX:
+            log(f"briefing skipped: {waiting} already waiting")
             return False
         job = {
             "pill_mode": evt.get("type"), "container": container,
@@ -432,7 +496,6 @@ class Store:
         }
         if job["pill_mode"] == "stop" and not job["last_assistant_message"].strip():
             return False
-        spool = os.path.join(self.config.speaker, "spool")
         try:
             os.makedirs(spool, exist_ok=True)
             path = os.path.join(spool, f"job-{time.time_ns()}.json")
@@ -443,15 +506,17 @@ class Store:
             return False
         worker = os.path.join(self.config.speaker, "worker.py")
         voice_log = os.path.join(spool, "voice.log")
+        self._brief_last[key] = now
         log(f"briefing queued: {container} {evt.get('repo') or '?'} ({job['pill_mode']})")
         # sh only to append the worker's output to voice.log, like voice/hook.py
         return self.spawn(["sh", "-c", 'exec "$0" "$@" >>"$CCPILL_VOICE_LOG" 2>&1',
                            self.voice_python(), worker, path],
-                          env={"CCPILL_VOICE_LOG": voice_log})
+                          env={"CCPILL_VOICE_LOG": voice_log, "PATH": user_path()})
 
     def _apply(self, evt):
+        """Apply one event; False when it was dropped."""
         if not isinstance(evt, dict):
-            return
+            return False
         now = self.clock()
         typ = evt.get("type") or ""
         sid = evt.get("sid") or ""
@@ -461,8 +526,8 @@ class Store:
         pid = int(pid) if isinstance(pid, (int, float)) else 0
         remote = bool(evt.get("remote", False))
         container = evt.get("container") or ""
-        if SPARE_CWD_RE.search(cwd):
-            return
+        if not isinstance(cwd, str) or SPARE_CWD_RE.search(cwd):
+            return False
 
         if typ == "start":
             self._upsert(sid, repo, cwd, pid, remote, container, "done", now)
@@ -489,7 +554,7 @@ class Store:
         elif typ == "tool":
             label = evt.get("label") or ""
             if not label or not sid:
-                return
+                return False
             s = self._find(sid)
             if s is not None:
                 if s.state != "working":
@@ -517,7 +582,7 @@ class Store:
         elif typ == "briefing":
             text = evt.get("text") or ""
             if not isinstance(text, str) or not text:
-                return
+                return False
             silent = bool(evt.get("silent", False))
             duration = evt.get("duration") or 0
             duration = float(duration) if isinstance(duration, (int, float)) else 0.0
@@ -535,6 +600,7 @@ class Store:
             how = "silent" if silent else f"{duration:.1f}s"
             log(f"briefing ({how}): {text[:60]}")
             self._briefing_clear_at = now + duration + BRIEFING_TAIL
+        return True
 
     def _find(self, sid):
         for s in self.sessions:
@@ -1027,6 +1093,7 @@ def make_handler(store, bridge=False):
     it answers nothing but POST /event, and only with a container's token."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "ccpilld/1.0"
+        timeout = 5   # a client that opens a connection and sends nothing is dropped
         # HTTP/1.0: one request per connection, so a refused request whose
         # body was never read can't bleed into the next one.
 
@@ -1148,23 +1215,26 @@ def serve(store, port, host="127.0.0.1", bridge=False):
     return httpd
 
 
-def serve_bridge(store, config, attempts=30):
-    """The container listener on the LXD bridge address. The bridge may come
-    up after us at login, so keep trying for a while in the background."""
+def serve_bridge(store, config, sleeper=time.sleep):
+    """The container listener on the LXD bridge address. The bridge can come
+    up long after us at login (snap LXD is slow), so keep trying in the
+    background, less often as time goes on."""
     holder = {}
 
     def bind():
-        for i in range(attempts):
+        wait, i = 2.0, 0
+        while True:
             try:
                 holder["httpd"] = serve(store, config.port, config.bridge_host, bridge=True)
                 log(f"listening for containers on {config.bridge_host}:{config.port} "
                     f"({', '.join(sorted(config.containers))})")
                 return
             except OSError as e:
-                if i == 0:
+                if i == 0 or i % 20 == 0:
                     log(f"bridge {config.bridge_host}:{config.port} not bindable yet: {e}")
-                time.sleep(2)
-        log(f"ERROR: gave up binding {config.bridge_host}:{config.port}")
+                i += 1
+                sleeper(wait)
+                wait = min(wait * 1.5, 30.0)
 
     threading.Thread(target=bind, daemon=True).start()
 

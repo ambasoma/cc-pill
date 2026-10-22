@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import secrets
+import shlex
 import shutil
 import subprocess
 import sys
@@ -65,19 +66,28 @@ def load_config():
 
 
 def save_config(cfg):
+    """Write the config readable by this user only: it holds the tokens."""
     os.makedirs(DATA, exist_ok=True)
     tmp = CONFIG + ".tmp"
-    with open(tmp, "w") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(cfg, f, indent=2)
+    os.chmod(tmp, 0o600)
     os.replace(tmp, CONFIG)
 
 
 def bridge_address(container):
-    """The host's address on the network the container's default route uses."""
+    """The host's address on the network the container's default route uses.
+    The container names it, so it must be one of this host's own addresses:
+    the daemon listens there."""
     out = sh(container, "ip -4 route show default").stdout.split()
-    if "via" in out:
-        return out[out.index("via") + 1]
-    die(f"{container}: no default route to find the host by")
+    if "via" not in out:
+        die(f"{container}: no default route to find the host by")
+    addr = out[out.index("via") + 1]
+    if addr not in ccpilld.host_addresses():
+        die(f"{container} routes through {addr}, which is not an address of this host; "
+            "only containers on a bridge of this host (lxdbr0) can be wired")
+    return addr
 
 
 def merge_hooks(settings, command_for):
@@ -109,14 +119,14 @@ def strip_hooks(settings):
 
 
 def home_of(container, user):
-    out = sh(container, f"getent passwd {user} | cut -d: -f6").stdout.strip()
+    out = sh(container, f"getent passwd {shlex.quote(user)} | cut -d: -f6").stdout.strip()
     if not out:
         die(f"{container}: no user {user}")
     return out
 
 
 def read_settings(container, path):
-    raw = sh(container, f"cat {path} 2>/dev/null || true").stdout
+    raw = sh(container, f"cat {shlex.quote(path)} 2>/dev/null || true").stdout
     if not raw.strip():
         return {}
     try:
@@ -127,14 +137,17 @@ def read_settings(container, path):
 
 
 def write_settings(container, path, settings, user):
-    # Keep a backup the first time, then write through a temp file.
+    """Keep a backup the first time, then write through a temp file that
+    takes the original's mode (settings can hold secrets) and owner."""
     body = json.dumps(settings, indent=2) + "\n"
+    p, u = shlex.quote(path), shlex.quote(user)
     sh(container, f"""set -e
-d=$(dirname {path}); mkdir -p "$d"
-[ -e {path} ] && [ ! -e {path}.pre-cc-pill ] && cp -p {path} {path}.pre-cc-pill
-cat > {path}.cc-pill-tmp
-chown {user}: {path}.cc-pill-tmp
-mv {path}.cc-pill-tmp {path}""", input=body)
+mkdir -p "$(dirname {p})"
+if [ -e {p} ] && [ ! -e {p}.pre-cc-pill ]; then cp -p {p} {p}.pre-cc-pill; fi
+(umask 077; cat > {p}.cc-pill-tmp)
+if [ -e {p} ]; then chmod --reference={p} {p}.cc-pill-tmp; fi
+chown {u}: {p}.cc-pill-tmp
+mv {p}.cc-pill-tmp {p}""", input=body)
 
 
 def add(container, user, cfg, port, home=None):
@@ -157,21 +170,38 @@ def add(container, user, cfg, port, home=None):
     with open(HOOK_SRC) as f:
         hook = f.read()
     remote = {"url": f"http://{host}:{port}", "container": container, "token": token}
+    d, u = shlex.quote(home + "/.cc-pill"), shlex.quote(user)
     sh(container, f"""set -e
-mkdir -p {home}/.cc-pill
-cat > {home}/.cc-pill/hook.py
-chmod 755 {home}/.cc-pill/hook.py
-chown -R {user}: {home}/.cc-pill""", input=hook)
+mkdir -p {d}
+cat > {d}/hook.py
+chmod 755 {d}/hook.py
+chown {u}: {d} {d}/hook.py""", input=hook)
     sh(container, f"""set -e
 umask 077
-cat > {home}/.cc-pill/remote.json
-chown {user}: {home}/.cc-pill/remote.json""", input=json.dumps(remote, indent=2) + "\n")
+cat > {d}/remote.json
+chown {u}: {d}/remote.json""", input=json.dumps(remote, indent=2) + "\n")
 
     path = f"{home}/.claude/settings.json"
     settings = merge_hooks(read_settings(container, path),
                            lambda mode: f'python3 "{home}{MARK}" {mode}')
     write_settings(container, path, settings, user)
     print(f"  {container}: hook in {home}/.cc-pill, events to {host}:{port}")
+    check_reach(container, host, port)
+
+
+def check_reach(container, host, port):
+    """One connection from inside the container to the bridge: a firewall
+    (ufw denies incoming by default) would otherwise drop every event, and
+    the pill would just stay empty."""
+    probe = (f"import socket; s = socket.create_connection(({host!r}, {int(port)}), timeout=2); s.close()")
+    if sh(container, f"python3 -c {shlex.quote(probe)}", check=False).returncode != 0:
+        print(f"  ! {container} can't reach {host}:{port}. Is the daemon running? "
+              f"With ufw: sudo ufw allow in on lxdbr0 to any port {int(port)} proto tcp")
+
+
+def running(container):
+    p = lxc("list", container, "--format", "csv", "-c", "ns", check=False)
+    return any(l.split(",")[0] == container and l.endswith(",RUNNING") for l in p.stdout.splitlines())
 
 
 def remove(container, user, cfg, home=None):
@@ -180,19 +210,22 @@ def remove(container, user, cfg, home=None):
     if not tokens:
         cfg.pop("containers", None)
         cfg.pop("bridge_host", None)
-    if lxc("info", container, check=False).returncode != 0:
-        print(f"  {container}: gone; dropped from the config")
+    if not running(container):
+        print(f"  {container}: not running; dropped from the config (start it and remove again "
+              "to take the hook out of it)")
         return
     home = home or home_of(container, user)
     path = f"{home}/.claude/settings.json"
     write_settings(container, path, strip_hooks(read_settings(container, path)), user)
-    sh(container, f"rm -rf {home}/.cc-pill")
+    # Only our two files: ~/.cc-pill can be a whole cc-pill install.
+    d = shlex.quote(home + "/.cc-pill")
+    sh(container, f"rm -f {d}/hook.py {d}/remote.json; rmdir {d} 2>/dev/null || true")
     print(f"  {container}: unwired")
 
 
 def restart_daemon():
     if shutil.which("systemctl") and subprocess.run(
-            ["systemctl", "--user", "is-enabled", "--quiet", "cc-pill.service"]).returncode == 0:
+            ["systemctl", "--user", "is-active", "--quiet", "cc-pill.service"]).returncode == 0:
         subprocess.run(["systemctl", "--user", "restart", "cc-pill.service"])
         print("  daemon restarted")
     else:
@@ -213,6 +246,9 @@ def main(argv=None):
     if a.action == "status":
         print(f"bridge: {cfg.get('bridge_host') or '(none)'}:{port}")
         for c in sorted(cfg.get("containers") or {}):
+            if not running(c):
+                print(f"  {c}: not running")
+                continue
             wired = sh(c, f"test -e ~{a.user}/.cc-pill/remote.json", check=False).returncode == 0
             print(f"  {c}: {'wired' if wired else 'in the config, but not wired inside'}")
         return 0
@@ -223,7 +259,9 @@ def main(argv=None):
             add(c, a.user, cfg, port, a.home)
         else:
             remove(c, a.user, cfg, a.home)
-    save_config(cfg)
+        # After each one: a later container failing must not leave this one
+        # wired with a token the host never saved.
+        save_config(cfg)
     if not a.no_restart:
         restart_daemon()
     return 0

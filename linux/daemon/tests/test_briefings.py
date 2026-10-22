@@ -13,6 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
+import ccpilld  # noqa: E402
 from test_ccpilld import evt  # noqa: E402
 from test_containers import REPO, ContainerBase, hook, load  # noqa: E402
 
@@ -72,6 +73,104 @@ class DaemonHandoffTest(ContainerBase):
         self.assertEqual(self.spawner.calls, [])
 
 
+class ReviewFixesTest(DaemonHandoffTest):
+    """Limits on what a container can make the host do."""
+
+    def test_one_briefing_per_session_per_window(self):
+        for _ in range(5):
+            self.store.apply_container("web-dev", evt("stop", sid="c1", speech={"text": "again"}))
+        self.assertEqual(len(self.jobs()), 1)
+        self.clock.advance(ccpilld.BRIEF_WINDOW + 1)
+        self.store.apply_container("web-dev", evt("stop", sid="c1", speech={"text": "later"}))
+        self.assertEqual(len(self.jobs()), 2)
+
+    def test_old_leftover_jobs_do_not_block_the_voice(self):
+        spool = os.path.join(self.speaker, "spool")
+        os.makedirs(spool)
+        for i in range(10):
+            path = os.path.join(spool, f"job-old{i}.json")
+            with open(path, "w") as f:
+                f.write("{}")
+            os.utime(path, (1, 1))   # a worker never started for these
+        self.store.apply_container("web-dev", evt("stop", sid="c1", speech={"text": "fresh"}))
+        self.assertEqual(sum(1 for j in self.jobs() if j.get("session_id") == "c1"), 1)
+
+    def test_queue_is_capped_across_sessions(self):
+        for i in range(10):
+            self.store.apply_container("web-dev", evt("stop", sid=f"s{i}", speech={"text": "x"}))
+        self.assertEqual(len(self.jobs()), ccpilld.BRIEF_QUEUE_MAX)
+
+    def test_worker_gets_a_path_with_the_user_bin_dirs(self):
+        self.store.apply_container("web-dev", evt("stop", sid="c1", speech={"text": "x"}))
+        self.assertTrue(self.spawner.envs[0]["PATH"].startswith(os.path.expanduser("~/.local/bin")))
+
+    def test_a_container_cannot_touch_another_containers_or_the_hosts_session(self):
+        self.store.apply(evt("start", sid="host1", cwd="/home/u/app"))
+        self.store.apply_container("dev2", evt("start", sid="d2"))
+        self.store.apply_container("web-dev", evt("end", sid="host1"))
+        self.store.apply_container("web-dev", evt("stop", sid="d2", speech={"text": "x"}))
+        self.assertEqual(sorted(s.id for s in self.store.sessions), ["d2", "host1"])
+        self.assertEqual(self.jobs(), [])
+
+    def test_bad_field_types_are_coerced_not_crashed_on(self):
+        bad = {"type": "stop", "sid": "c1", "cwd": ["x"], "repo": {"a": 1}, "pid": "12",
+               "ssh_client": ["1.2.3.4"], "label": 5, "msg": None, "speech": {"text": 7}}
+        self.store.apply_container("web-dev", bad)
+        s = self.store.sessions[0]
+        self.assertEqual((s.id, s.cwd, s.repo, s.pid, s.remote), ("c1", "", "?", 0, False))
+        self.store.apply_container("web-dev", {"type": "prompt", "sid": "c2", "pid": True})
+        self.assertEqual(self.store._find("c2").pid, 0)
+
+    def test_spare_events_are_not_briefed(self):
+        self.store.apply_container("web-dev", evt("stop", sid="sp", cwd="/tmp/cc-daemon-0/ab/spare",
+                                                   speech={"text": "x"}))
+        self.assertEqual(self.jobs(), [])
+
+    def test_empty_address_lookup_is_not_kept(self):
+        self.store._local_addrs = None
+        self.runner.rules = [(("ip",), ("", 1))]
+        self.assertEqual(self.store.local_addresses(), set())
+        self.runner.rules = [(("ip",), ("2: lxdbr0    inet 192.0.2.1/24 scope global lxdbr0\n", 0))]
+        self.assertEqual(self.store.local_addresses(), {"192.0.2.1"})
+
+
+class ConfigAndServerTest(unittest.TestCase):
+    def test_wildcard_bridge_hosts_are_refused(self):
+        for bad in ("0.0.0.0", "::", "", 5, None):
+            self.assertEqual(ccpilld.Config({"bridge_host": bad}).bridge_host, "", bad)
+        self.assertEqual(ccpilld.Config({"bridge_host": "192.0.2.1"}).bridge_host, "192.0.2.1")
+
+    def test_handler_drops_silent_connections(self):
+        self.assertEqual(ccpilld.make_handler(None, bridge=True).timeout, 5)
+
+    def test_bridge_keeps_trying_until_it_binds(self):
+        tries = []
+        orig = ccpilld.serve
+
+        def flaky(store, port, host, bridge=False):
+            tries.append(1)
+            if len(tries) < 40:
+                raise OSError("Cannot assign requested address")
+            return mock.Mock()
+        done = __import__("threading").Event()
+        waits = []
+
+        def sleeper(s):
+            waits.append(s)
+            if len(waits) >= 39:
+                done.set()
+        cfg = ccpilld.Config({"bridge_host": "192.0.2.1", "containers": {"a": "t"}})
+        with mock.patch.object(ccpilld, "serve", flaky), mock.patch.object(ccpilld, "log", lambda m: None):
+            ccpilld.serve_bridge(None, cfg, sleeper=sleeper)
+            done.wait(5)
+            for _ in range(100):
+                if len(tries) >= 40:
+                    break
+                __import__("time").sleep(0.01)
+        self.assertEqual(len(tries), 40)        # well past the old 30-try limit
+        self.assertEqual(max(waits), 30.0)      # backs off, capped
+
+
 class HookSpeechTest(unittest.TestCase):
     def test_stop_carries_the_final_message(self):
         self.assertEqual(hook.speech_for("stop", {"last_assistant_message": "All done."}), {"text": "All done."})
@@ -111,14 +210,15 @@ class StopButtonTest(ContainerBase):
 class WorkerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
-        self._orig = (worker.VOICE_DIR, worker.SPOKE_STAMP)
+        self._orig = (worker.VOICE_DIR, worker.SPOKE_STAMP, worker.CONFIG)
         worker.VOICE_DIR = self.tmp
         worker.SPOKE_STAMP = os.path.join(self.tmp, "last-spoke")
+        worker.CONFIG = os.path.join(self.tmp, "no-config.json")   # never the developer's real config
         with open(os.path.join(self.tmp, "prompt.txt"), "w") as f:
             f.write("You are Alfred.")
 
     def tearDown(self):
-        worker.VOICE_DIR, worker.SPOKE_STAMP = self._orig
+        worker.VOICE_DIR, worker.SPOKE_STAMP, worker.CONFIG = self._orig
         shutil.rmtree(self.tmp)
 
     def test_spoken_name(self):
@@ -129,12 +229,13 @@ class WorkerTest(unittest.TestCase):
         seen = {}
 
         def fake_run(args, input, **kw):
-            seen["prompt"] = input
+            seen["prompt"], seen["args"] = input, args
             return mock.Mock(returncode=0, stdout="Batching is done.")
         with mock.patch.object(worker.subprocess, "run", fake_run):
             line = worker.summarize("long message", "stop", "haiku", None, 25, "web-dev")
         self.assertEqual(line, "Batching is done.")
         self.assertIn("Hard limit: 25 words", seen["prompt"])
+        self.assertEqual(seen["args"][-2:], ["--tools", ""], "the summarizer must run with no tools")
         self.assertIn("Do not name the container", seen["prompt"])
         with mock.patch.object(worker.subprocess, "run", fake_run):
             worker.summarize("long message", "stop", "haiku")

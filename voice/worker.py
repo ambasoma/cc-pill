@@ -151,6 +151,16 @@ def clip(raw, limit=4000):
     return raw[:limit * 5 // 8] + "\n[...]\n" + raw[-(limit * 3 // 8):]
 
 
+def claude_bin():
+    """The claude CLI: config's claude_bin, the usual install places, PATH.
+    The worker can start under a bare PATH (a systemd user service)."""
+    cfg_bin = load_config().get("claude_bin")
+    for p in (cfg_bin, os.path.expanduser("~/.local/bin/claude"), "/usr/local/bin/claude", "/usr/bin/claude"):
+        if p and os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return shutil.which("claude") or "claude"
+
+
 def summarize(raw, mode, model, ctx_repo=None, max_words=0, container=""):
     with open(os.path.join(VOICE_DIR, "prompt.txt")) as f:
         prompt = f.read()
@@ -183,8 +193,10 @@ def summarize(raw, mode, model, ctx_repo=None, max_words=0, container=""):
 
     env = dict(os.environ, PILL_INNER="1")
     try:
+        # No tools: the message comes from a session (maybe in a container)
+        # and must never make the summarizer read or run anything here.
         out = subprocess.run(
-            ["claude", "-p", "--model", model],
+            [claude_bin(), "-p", "--model", model, "--tools", ""],
             input=prompt,
             capture_output=True,
             text=True,

@@ -122,16 +122,32 @@ pkg_hint() {  # pkg_hint <pkg...>  -> prints the install command for this distro
 }
 
 # ---------- shared helpers ----------
-cfg_set() {  # cfg_set key json_value
-  python3 - "$DATA/config.json" "$1" "$2" <<'PYEOF'
-import json, sys
-p, key, val = sys.argv[1:4]
+cfg_merge() {  # cfg_merge <json object to set> [<json object of defaults>]
+  python3 - "$DATA/config.json" "$1" "${2:-null}" <<'PYEOF'
+import json, os, sys
+p, updates, defaults = sys.argv[1:4]
 cfg = {}
-try: cfg = json.load(open(p))
-except Exception: pass
-cfg[key] = json.loads(val)
-json.dump(cfg, open(p, "w"), indent=2)
+if os.path.exists(p):
+    try:
+        with open(p) as f:
+            cfg = json.load(f)
+    except ValueError as e:
+        sys.exit(f"{p} is not valid JSON ({e}); fix it and run setup again")
+cfg.update(json.loads(updates))
+for k, v in (json.loads(defaults) or {}).items():
+    cfg.setdefault(k, v)
+# Readable by this user only, from the first byte: it holds the container tokens.
+tmp = p + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as f:
+    json.dump(cfg, f, indent=2)
+os.chmod(tmp, 0o600)
+os.replace(tmp, p)
 PYEOF
+}
+
+cfg_set() {  # cfg_set key json_value
+  cfg_merge "{\"$1\": $2}"
 }
 
 register_hooks() {  # register_hooks <install> <voice_on: 1|0> <voice dir>
@@ -144,8 +160,14 @@ if os.path.exists(p) and not os.path.exists(p + ".pre-cc-pill"):
     import shutil
     shutil.copy2(p, p + ".pre-cc-pill")   # the first time only: the untouched original
 cfg = {}
-try: cfg = json.load(open(p))
-except Exception: pass
+if os.path.exists(p):
+    try:
+        with open(p) as f:
+            cfg = json.load(f)
+    except ValueError as e:
+        sys.exit(f"~/.claude/settings.json is not valid JSON ({e}); fix it and run setup again")
+    if not isinstance(cfg, dict):
+        sys.exit("~/.claude/settings.json is not a JSON object; fix it and run setup again")
 hooks = cfg.setdefault("hooks", {})
 pill = install + "/hooks/hook.py"
 voice = vdir + "/hook.py"
@@ -159,11 +181,18 @@ ours = {
     "Notification": [cmd(pill, "notify")] + ([cmd(voice, "notify")] if voice_on else []),
 }
 # Keep every hook that isn't ours; replace earlier copies of ours (a re-run,
-# or the voice switched on or off) instead of piling them up.
+# the voice switched on or off, an install that moved) instead of piling
+# them up. Ours: a hook.py that sits in a cc-pill install (one with the
+# daemon two levels up), not any script that happens to share the name.
+import re
 def is_ours(h):
-    c = str(h.get("command", ""))
-    return c.endswith(tuple('/hooks/hook.py" ' + m for m in ("start", "prompt", "tool", "end", "stop", "notify"))) \
-        or c.endswith(('/voice/hook.py" stop', '/voice/hook.py" notify'))
+    m = re.fullmatch(r'python3 "(.+)/(hooks|voice)/hook\.py" (start|prompt|tool|end|stop|notify)',
+                     str(h.get("command", "")))
+    if not m:
+        return False
+    root = m.group(1)
+    return root == install or os.path.exists(os.path.join(root, "linux", "daemon", "ccpilld.py")) \
+        or os.path.realpath(os.path.join(root, "voice")) == os.path.realpath(vdir)
 for event, cmds in ours.items():
     groups = []
     for g in hooks.get(event) or []:
@@ -172,7 +201,13 @@ for event, cmds in ours.items():
             groups.append(dict(g, hooks=inner))
     groups.append({"hooks": cmds})
     hooks[event] = groups
-json.dump(cfg, open(p, "w"), indent=2)
+# Through a temp file with the original's mode: never a half-written settings.json.
+tmp = p + ".cc-pill-tmp"
+with open(tmp, "w") as f:
+    json.dump(cfg, f, indent=2)
+if os.path.exists(p):
+    os.chmod(tmp, os.stat(p).st_mode & 0o7777)
+os.replace(tmp, p)
 PYEOF
 }
 
@@ -313,7 +348,8 @@ lxd_containers() {  # running LXD containers with a Claude Code install, one per
   command -v lxc >/dev/null || return 0
   local c
   for c in $(lxc list --format csv -c n,s 2>/dev/null | awk -F, '$2=="RUNNING"{print $1}'); do
-    lxc exec "$c" -- sh -c 'test -d /root/.claude || ls -d /home/*/.claude >/dev/null 2>&1' 2>/dev/null && echo "$c"
+    # root only: that is the user the wiring (and the card's tmux actions) use
+    lxc exec "$c" -- test -d /root/.claude 2>/dev/null && echo "$c"
   done
 }
 
@@ -433,7 +469,9 @@ if [ "$MODE" = "containers" ]; then
   command -v lxc >/dev/null || die "the lxc client is not installed"
   banner
   head_ "LXD containers" "Claude Code sessions inside containers report to the pill over the LXD bridge."
-  wire_containers "$REPO" "${@:2}"
+  # the installed copy's hook, the one the running daemon matches
+  WIRE_FROM=$(installed_at); [ -n "$WIRE_FROM" ] && [ -d "$WIRE_FROM/hooks" ] || WIRE_FROM="$REPO"
+  wire_containers "$WIRE_FROM" "${@:2}"
   exit 0
 fi
 
@@ -579,13 +617,10 @@ WANTVOICE="n"
 ui_confirm "Enable the voice?" "y" && WANTVOICE="y"
 
 # ---------- write base config ----------
-CCPILL_SP="$SYSPROMPT" python3 - "$DATA/config.json" "$WORKDIR" "$VOICE" "$PERM" "$TERMINAL" "$HOTKEY" <<'PYEOF'
+BASE_CFG=$(CCPILL_SP="$SYSPROMPT" python3 - "$WORKDIR" "$VOICE" "$PERM" "$TERMINAL" "$HOTKEY" <<'PYEOF'
 import json, os, sys
-p, workdir, vdir, perm, terminal, hotkey = sys.argv[1:7]
-cfg = {}
-try: cfg = json.load(open(p))
-except Exception: pass
-cfg.update({
+workdir, vdir, perm, terminal, hotkey = sys.argv[1:6]
+print(json.dumps({
     "home_repo": workdir,
     "permission_mode": perm,
     "terminal": terminal,
@@ -593,12 +628,10 @@ cfg.update({
     "pill_gc_minutes": 30,
     "pill_system_prompt": os.environ.get("CCPILL_SP", ""),
     "speaker": vdir,
-})
-cfg.setdefault("daemon_port", 17357)
-cfg.setdefault("name", "Jarvis")
-cfg.setdefault("enabled", False)
-json.dump(cfg, open(p, "w"), indent=2)
+}))
 PYEOF
+)
+cfg_merge "$BASE_CFG" '{"daemon_port": 17357, "name": "Jarvis", "enabled": false}'
 ok "config written to $DATA/config.json"
 
 # ---------- voice install ----------
