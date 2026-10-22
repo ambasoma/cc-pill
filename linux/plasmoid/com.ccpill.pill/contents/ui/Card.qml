@@ -1,14 +1,15 @@
 /*
  * The session card: full representation, shown as the Plasma popup when the
- * pill is clicked. One row per session with replay-briefing, speak-a-prompt
- * and open-terminal buttons, a pin to keep the card open, and the voice's
- * mute toggle in the footer.
+ * pill is clicked. One row per session: its state, what it is doing, its
+ * last briefing, and replay, send-a-prompt and open-terminal buttons. A pin
+ * keeps the card open; the footer holds the voice and its mute toggle.
  */
 pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Layouts
 import org.kde.plasma.components as PlasmaComponents3
+import org.kde.plasma.extras as PlasmaExtras
 import org.kde.kirigami as Kirigami
 
 Item {
@@ -18,15 +19,19 @@ Item {
     // peek: shown in a no-focus window on hover; nothing that needs typing
     property bool peek: false
     readonly property var pd: ctl ? ctl.pillData : null
-    readonly property QtObject theme: ctl ? ctl.theme : null
     readonly property bool online: ctl ? ctl.online : false
 
     property string inputFor: ""     // session id whose prompt field is open
 
-    Layout.preferredWidth: Kirigami.Units.gridUnit * 21
+    readonly property color ink: Kirigami.Theme.textColor
+    readonly property int pad: Kirigami.Units.largeSpacing
+    readonly property int gap: Kirigami.Units.smallSpacing
+    readonly property int dotSize: 8
+
+    Layout.preferredWidth: Kirigami.Units.gridUnit * 22
     Layout.minimumWidth: Kirigami.Units.gridUnit * 18
     Layout.maximumWidth: Kirigami.Units.gridUnit * 26
-    Layout.preferredHeight: column.implicitHeight + Kirigami.Units.largeSpacing * 2
+    Layout.preferredHeight: column.implicitHeight + pad * 2
     Layout.minimumHeight: Layout.preferredHeight
     Layout.maximumHeight: Layout.preferredHeight
 
@@ -36,40 +41,74 @@ Item {
         return pd.sessions.slice().sort((a, b) => (order[a.state] - order[b.state]) || (a.since - b.since))
     }
 
+    readonly property var counts: {
+        const c = { waiting: 0, working: 0, done: 0 }
+        for (const s of sorted) c[s.state] += 1
+        return c
+    }
+
+    function stateWord(state) {
+        return state === "waiting" ? "needs you" : state
+    }
+
     function detail(s) {
         if (!ctl) return ""
-        const age = ctl.elapsedText(s.since)
-        if (s.state === "waiting") return "needs you · " + age
-        if (s.state === "working") return s.activity ? "working · " + s.activity : "working · " + age
-        return "done · " + age
+        return s.state === "working" && s.activity ? s.activity : ctl.elapsedText(s.since)
+    }
+
+    function tint(c, a) {
+        return Qt.rgba(c.r, c.g, c.b, a)
     }
 
     onVisibleChanged: if (!visible) inputFor = ""
 
     ColumnLayout {
         id: column
-        anchors { left: parent.left; right: parent.right; top: parent.top; margins: Kirigami.Units.largeSpacing }
-        spacing: Kirigami.Units.smallSpacing
+        anchors { left: parent.left; right: parent.right; top: parent.top; margins: card.pad }
+        spacing: card.gap
 
         // ------------------------------------------------------- header
         RowLayout {
             Layout.fillWidth: true
+            Layout.leftMargin: card.gap
+            spacing: card.gap
+
             PlasmaComponents3.Label {
-                text: "SESSIONS · " + (card.pd ? card.pd.sessions.length : 0)
+                text: "SESSIONS"
                 font.pointSize: Kirigami.Theme.smallFont.pointSize
                 font.weight: Font.DemiBold
                 font.letterSpacing: 1.2
                 opacity: 0.6
             }
+            // "1 needs you · 1 working · 2 done", each count in its state's colour
+            Repeater {
+                model: card.online ? ["waiting", "working", "done"].filter(k => card.counts[k] > 0) : []
+                delegate: RowLayout {
+                    id: countItem
+                    required property string modelData
+                    required property int index
+                    spacing: card.gap
+                    PlasmaComponents3.Label {
+                        visible: countItem.index > 0
+                        text: "·"
+                        font: Kirigami.Theme.smallFont
+                        opacity: 0.4
+                    }
+                    PlasmaComponents3.Label {
+                        text: card.counts[countItem.modelData] + " " + card.stateWord(countItem.modelData)
+                        font: Kirigami.Theme.smallFont
+                        color: card.ctl ? card.ctl.stateColor(countItem.modelData) : card.ink
+                    }
+                }
+            }
             Item { Layout.fillWidth: true }
             // Keep Open, like the pin on the clock's and the network's popups
             PlasmaComponents3.ToolButton {
-                id: pinButton
                 visible: !card.peek && card.ctl !== null
                 checkable: true
                 checked: card.ctl ? card.ctl.cfg.pin : false
                 display: PlasmaComponents3.AbstractButton.IconOnly
-                icon.name: "window-pin"
+                icon.name: "window-pin-symbolic"
                 text: "Keep Open"
                 onToggled: card.ctl.cfg.pin = checked
                 Accessible.name: text
@@ -78,188 +117,290 @@ Item {
             }
         }
 
-        // ------------------------------------------------------- offline
-        PlasmaComponents3.Label {
-            visible: !card.online
+        // ------------------------------------------- offline / no sessions
+        PlasmaExtras.PlaceholderMessage {
+            visible: !card.online || card.sorted.length === 0
             Layout.fillWidth: true
-            wrapMode: Text.WordWrap
-            text: "The cc-pill daemon isn't running.\nsystemctl --user status cc-pill"
-            opacity: 0.7
-        }
-
-        PlasmaComponents3.Label {
-            visible: card.online && card.sorted.length === 0
-            Layout.fillWidth: true
-            text: "No Claude Code sessions right now."
-            opacity: 0.7
+            Layout.topMargin: card.pad
+            Layout.bottomMargin: card.pad
+            iconName: card.online ? "dialog-messages-symbolic" : "network-disconnect-symbolic"
+            text: card.online ? "No Claude Code sessions" : "The cc-pill daemon isn't running"
+            explanation: card.online ? "Sessions show here when they start." : "systemctl --user status cc-pill"
         }
 
         // --------------------------------------------------------- rows
         Repeater {
-            model: card.sorted
-            delegate: ColumnLayout {
+            model: card.online ? card.sorted : []
+            delegate: Item {
                 id: row
                 required property var modelData
+                readonly property color stateColor: card.ctl ? card.ctl.stateColor(modelData.state) : card.ink
+                readonly property bool waiting: modelData.state === "waiting"
+                readonly property bool speaking: !!card.pd && card.pd.pill.state === "speaking"
+                                                 && !!card.pd.briefing && !card.pd.briefing.silent
+                                                 && card.pd.briefing.sid === modelData.id
+                readonly property bool typing: card.inputFor === modelData.id
+                // the buttons show on hover or keyboard focus, so the card stays calm
+                readonly property bool active: hover.hovered || typing || speaking
+
                 Layout.fillWidth: true
-                spacing: 2
+                implicitHeight: body.implicitHeight + card.gap * 2
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
+                HoverHandler { id: hover }
 
-                    Rectangle {
-                        width: 8; height: 8; radius: 4
-                        color: card.ctl ? card.ctl.stateColor(row.modelData.state) : "gray"
-                        Layout.alignment: Qt.AlignVCenter
-                        Behavior on color { ColorAnimation { duration: 300 } }
-                    }
+                Rectangle {
+                    anchors.fill: parent
+                    radius: Kirigami.Units.cornerRadius
+                    color: row.waiting ? card.tint(row.stateColor, hover.hovered ? 0.16 : 0.10)
+                                       : card.tint(card.ink, hover.hovered ? 0.06 : 0)
+                    Behavior on color { ColorAnimation { duration: Kirigami.Units.shortDuration } }
+                }
 
-                    ColumnLayout {
+                ColumnLayout {
+                    id: body
+                    anchors { left: parent.left; right: parent.right; top: parent.top; margins: card.gap }
+                    spacing: 2
+
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 0
-                        RowLayout {
-                            spacing: Kirigami.Units.smallSpacing
-                            PlasmaComponents3.Label {
-                                text: row.modelData.repo
-                                font.weight: Font.DemiBold
-                                elide: Text.ElideRight
-                                Layout.maximumWidth: Kirigami.Units.gridUnit * 10
+                        spacing: card.gap
+
+                        // the dot sits on the name's line, not in the middle of the block
+                        Rectangle {
+                            Layout.alignment: Qt.AlignTop
+                            Layout.topMargin: Math.round((name.implicitHeight - card.dotSize) / 2)
+                            Layout.preferredWidth: card.dotSize
+                            Layout.preferredHeight: card.dotSize
+                            radius: card.dotSize / 2
+                            color: row.stateColor
+                            Behavior on color { ColorAnimation { duration: 300 } }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            RowLayout {
+                                spacing: card.gap
+                                PlasmaComponents3.Label {
+                                    id: name
+                                    text: row.modelData.repo
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                    Layout.maximumWidth: Kirigami.Units.gridUnit * 10
+                                }
+                                // where it runs: its LXD container, and ssh from elsewhere
+                                Repeater {
+                                    model: [row.modelData.container || "", row.modelData.remote ? "ssh" : ""]
+                                           .filter(t => t !== "")
+                                    delegate: Rectangle {
+                                        id: chip
+                                        required property string modelData
+                                        Layout.alignment: Qt.AlignVCenter
+                                        implicitWidth: chipText.implicitWidth + card.gap * 2
+                                        implicitHeight: chipText.implicitHeight + 2
+                                        radius: height / 2
+                                        color: card.tint(card.ink, 0.08)
+                                        PlasmaComponents3.Label {
+                                            id: chipText
+                                            anchors.centerIn: parent
+                                            text: chip.modelData
+                                            font: Kirigami.Theme.smallFont
+                                            opacity: 0.75
+                                        }
+                                    }
+                                }
                             }
-                            PlasmaComponents3.Label {
-                                // the LXD container a session runs in, and/or ssh
-                                readonly property string where: row.modelData.container || ""
-                                visible: row.modelData.remote || where !== ""
-                                text: where !== "" ? (row.modelData.remote ? where + " · ssh" : where) : "ssh"
-                                font: Kirigami.Theme.smallFont
-                                opacity: 0.5
+
+                            RowLayout {
+                                spacing: card.gap
+                                Layout.fillWidth: true
+                                PlasmaComponents3.Label {
+                                    text: card.stateWord(row.modelData.state)
+                                    font: Kirigami.Theme.smallFont
+                                    color: row.stateColor
+                                }
+                                PlasmaComponents3.Label {
+                                    text: "·"
+                                    font: Kirigami.Theme.smallFont
+                                    opacity: 0.4
+                                }
+                                PlasmaComponents3.Label {
+                                    text: card.detail(row.modelData)
+                                    font: Kirigami.Theme.smallFont
+                                    opacity: 0.6
+                                    elide: Text.ElideRight
+                                    Layout.fillWidth: true
+                                }
                             }
                         }
+
+                        // ------------------------------------------ actions
+                        RowLayout {
+                            Layout.alignment: Qt.AlignTop
+                            spacing: 0
+
+                            PlasmaComponents3.ToolButton {
+                                visible: !card.peek
+                                display: PlasmaComponents3.AbstractButton.IconOnly
+                                icon.name: "dialog-messages-symbolic"
+                                text: "Send a prompt to this session"
+                                checkable: true
+                                checked: row.typing
+                                opacity: row.active || activeFocus ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
+                                onClicked: card.inputFor = row.typing ? "" : row.modelData.id
+                                Accessible.name: text
+                                PlasmaComponents3.ToolTip.text: text
+                                PlasmaComponents3.ToolTip.visible: hovered
+                            }
+                            PlasmaComponents3.ToolButton {
+                                display: PlasmaComponents3.AbstractButton.IconOnly
+                                icon.name: "utilities-terminal-symbolic"
+                                text: "Open its terminal"
+                                opacity: row.active || activeFocus ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
+                                onClicked: {
+                                    card.ctl.post("/terminal", { sid: row.modelData.id })
+                                    card.ctl.expanded = false
+                                }
+                                Accessible.name: text
+                                PlasmaComponents3.ToolTip.text: text
+                                PlasmaComponents3.ToolTip.visible: hovered
+                            }
+                            PlasmaComponents3.ToolButton {
+                                // last, at the edge: the one button that shows at rest
+                                display: PlasmaComponents3.AbstractButton.IconOnly
+                                icon.name: row.speaking ? "media-playback-stop-symbolic" : "media-playback-start-symbolic"
+                                text: row.speaking ? "Stop" : (row.modelData.last_briefing ? "Play the last briefing" : "No briefing yet")
+                                enabled: row.speaking || (!!row.modelData.last_briefing && !!card.pd && card.pd.voice.available)
+                                opacity: row.active || activeFocus ? 1 : (enabled ? 0.55 : 0)
+                                Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
+                                onClicked: row.speaking ? card.ctl.post("/stop", {}) : card.ctl.post("/recap", { sid: row.modelData.id })
+                                Accessible.name: text
+                                PlasmaComponents3.ToolTip.text: text
+                                PlasmaComponents3.ToolTip.visible: hovered
+                            }
+                        }
+                    }
+
+                    // the last briefing, as a quote in the state's colour
+                    RowLayout {
+                        visible: !!row.modelData.last_briefing
+                        Layout.fillWidth: true
+                        Layout.leftMargin: card.dotSize + card.gap
+                        Layout.topMargin: 2
+                        spacing: card.gap
+                        Rectangle {
+                            Layout.fillHeight: true
+                            Layout.preferredWidth: 2
+                            radius: 1
+                            color: card.tint(row.stateColor, row.speaking ? 0.9 : 0.45)
+                        }
                         PlasmaComponents3.Label {
-                            text: card.detail(row.modelData)
+                            text: row.modelData.last_briefing || ""
                             font: Kirigami.Theme.smallFont
-                            opacity: 0.6
+                            opacity: row.speaking ? 1 : 0.8
+                            wrapMode: Text.WordWrap
+                            maximumLineCount: 2
                             elide: Text.ElideRight
                             Layout.fillWidth: true
                         }
                     }
 
-                    PlasmaComponents3.ToolButton {
-                        // play the last briefing; while this session is being spoken, stop
-                        readonly property bool speaking: !!card.pd && card.pd.pill.state === "speaking"
-                                                         && !!card.pd.briefing && !card.pd.briefing.silent
-                                                         && card.pd.briefing.sid === row.modelData.id
-                        icon.name: speaking ? "media-playback-stop" : "media-playback-start"
-                        enabled: speaking || (!!row.modelData.last_briefing && !!card.pd && card.pd.voice.available)
-                        onClicked: speaking ? card.ctl.post("/stop", {}) : card.ctl.post("/recap", { sid: row.modelData.id })
-                        PlasmaComponents3.ToolTip.text: speaking ? "Stop" : (row.modelData.last_briefing ? "Play recap" : "No briefing yet")
-                        PlasmaComponents3.ToolTip.visible: hovered
-                    }
-                    PlasmaComponents3.ToolButton {
-                        visible: !card.peek
-                        icon.name: "mail-message-new"
-                        checked: card.inputFor === row.modelData.id
-                        onClicked: card.inputFor = card.inputFor === row.modelData.id ? "" : row.modelData.id
-                        PlasmaComponents3.ToolTip.text: "Send a prompt to this session"
-                        PlasmaComponents3.ToolTip.visible: hovered
-                    }
-                    PlasmaComponents3.ToolButton {
-                        icon.name: "utilities-terminal"
-                        onClicked: {
-                            card.ctl.post("/terminal", { sid: row.modelData.id })
-                            card.ctl.expanded = false
-                        }
-                        PlasmaComponents3.ToolTip.text: "Open terminal"
-                        PlasmaComponents3.ToolTip.visible: hovered
-                    }
-                }
-
-                // the last briefing, so a summary that crawled past can be read later
-                PlasmaComponents3.Label {
-                    visible: !!row.modelData.last_briefing
-                    text: row.modelData.last_briefing || ""
-                    font: Kirigami.Theme.smallFont
-                    opacity: 0.75
-                    wrapMode: Text.WordWrap
-                    maximumLineCount: 3
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 8 + Kirigami.Units.smallSpacing
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: 8 + Kirigami.Units.smallSpacing
-                    visible: card.inputFor === row.modelData.id
-                    onVisibleChanged: if (visible) promptField.forceActiveFocus()
-                    PlasmaComponents3.TextField {
-                        id: promptField
+                    RowLayout {
                         Layout.fillWidth: true
-                        placeholderText: "Prompt for " + row.modelData.repo + "…"
-                        onAccepted: sendButton.clicked()
-                        Keys.onEscapePressed: card.inputFor = ""
-                    }
-                    PlasmaComponents3.ToolButton {
-                        id: sendButton
-                        icon.name: "document-send"
-                        enabled: promptField.text.trim().length > 0
-                        onClicked: {
-                            const t = promptField.text.trim()
-                            if (!t.length) return
-                            card.ctl.post("/prompt", { sid: row.modelData.id, text: t })
-                            promptField.text = ""
-                            card.inputFor = ""
+                        Layout.leftMargin: card.dotSize + card.gap
+                        Layout.topMargin: card.gap
+                        visible: row.typing
+                        onVisibleChanged: if (visible) promptField.forceActiveFocus()
+                        PlasmaComponents3.TextField {
+                            id: promptField
+                            Layout.fillWidth: true
+                            placeholderText: "Message " + row.modelData.repo + (row.modelData.container ? " in " + row.modelData.container : "") + "…"
+                            onAccepted: sendButton.clicked()
+                            Keys.onEscapePressed: card.inputFor = ""
+                        }
+                        PlasmaComponents3.ToolButton {
+                            id: sendButton
+                            display: PlasmaComponents3.AbstractButton.IconOnly
+                            icon.name: "document-send-symbolic"
+                            text: "Send"
+                            enabled: promptField.text.trim().length > 0
+                            onClicked: {
+                                const t = promptField.text.trim()
+                                if (!t.length) return
+                                card.ctl.post("/prompt", { sid: row.modelData.id, text: t })
+                                promptField.text = ""
+                                card.inputFor = ""
+                            }
+                            Accessible.name: text
+                            PlasmaComponents3.ToolTip.text: text
+                            PlasmaComponents3.ToolTip.visible: hovered
                         }
                     }
                 }
             }
         }
 
-        // -------------------------------------------------------- footer
-        Rectangle {
+        // ---------------------------------------------------------- toast
+        PlasmaComponents3.Label {
+            visible: !!(card.pd && card.pd.toast)
+            text: card.pd && card.pd.toast ? card.pd.toast : ""
+            font: Kirigami.Theme.smallFont
+            opacity: 0.85
             Layout.fillWidth: true
-            Layout.topMargin: Kirigami.Units.smallSpacing
-            height: 1
-            color: Kirigami.Theme.textColor
-            opacity: 0.12
+            Layout.leftMargin: card.gap
+            elide: Text.ElideRight
+        }
+
+        // -------------------------------------------------------- footer
+        Kirigami.Separator {
+            Layout.fillWidth: true
+            Layout.topMargin: card.gap
+            opacity: 0.6
         }
 
         RowLayout {
             Layout.fillWidth: true
+            Layout.leftMargin: card.gap
+            spacing: card.gap
+            readonly property var voice: card.pd ? card.pd.voice : null
+
             PlasmaComponents3.Label {
-                text: {
-                    if (!card.pd) return ""
-                    const v = card.pd.voice
-                    if (!v.available) return v.name + " · voice not installed"
-                    return v.name + " · " + (v.muted ? "muted" : "speaking")
-                }
+                text: parent.voice ? parent.voice.name : ""
+                font.pointSize: Kirigami.Theme.smallFont.pointSize
+                font.weight: Font.DemiBold
+                opacity: 0.75
+            }
+            PlasmaComponents3.Label {
+                text: !parent.voice ? "" : !parent.voice.available ? "voice not installed"
+                      : parent.voice.muted ? "muted" : "voice on"
                 font: Kirigami.Theme.smallFont
-                opacity: 0.6
+                opacity: 0.55
             }
             Item { Layout.fillWidth: true }
             PlasmaComponents3.ToolButton {
-                visible: card.pd && card.pd.voice.available
-                text: card.pd && card.pd.voice.muted ? "unmute" : "mute"
-                flat: true
-                font: Kirigami.Theme.smallFont
+                visible: !!parent.voice && parent.voice.available
+                display: PlasmaComponents3.AbstractButton.IconOnly
+                checkable: true
+                checked: !!parent.voice && parent.voice.muted
+                icon.name: checked ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic"
+                text: checked ? "Unmute " + parent.voice.name : "Mute " + (parent.voice ? parent.voice.name : "")
                 onClicked: card.ctl.post("/mute", {})
+                Accessible.name: text
+                PlasmaComponents3.ToolTip.text: text
+                PlasmaComponents3.ToolTip.visible: hovered
             }
         }
 
         PlasmaComponents3.Label {
             visible: card.peek
-            text: "Click the pill to type a prompt or start a session."
+            text: "Click the pill to send a prompt."
             font: Kirigami.Theme.smallFont
             opacity: 0.5
             Layout.fillWidth: true
-            elide: Text.ElideRight
-        }
-
-        PlasmaComponents3.Label {
-            visible: card.pd && card.pd.toast
-            text: card.pd && card.pd.toast ? card.pd.toast : ""
-            font: Kirigami.Theme.smallFont
-            color: card.theme ? card.theme.amber : Kirigami.Theme.textColor
-            Layout.fillWidth: true
+            Layout.leftMargin: card.gap
             elide: Text.ElideRight
         }
     }
