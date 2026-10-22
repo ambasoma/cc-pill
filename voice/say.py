@@ -16,6 +16,7 @@ import worker
 if __name__ == "__main__":
     args = sys.argv[1:]
     if args and args[0] == "--stop":
+        worker.claim_ask()        # also cancels replays still waiting their turn
         worker.stop_playback()
         sys.exit(0)
     meta = None
@@ -24,6 +25,8 @@ if __name__ == "__main__":
         args = args[2:]
     text = " ".join(args).strip()
     if text:
-        # An explicit ask preempts whatever is currently playing.
+        # An explicit ask preempts whatever is playing, and any earlier ask
+        # that has not played yet (clicking replay on one row, then another).
+        token = worker.claim_ask()
         worker.stop_playback()
-        worker.speak(text, worker.load_config(), meta)
+        worker.speak(text, worker.load_config(), meta, ask=token)

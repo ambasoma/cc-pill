@@ -34,6 +34,10 @@ PLAYER_PID = os.path.join(SPOOL, "player.pid")
 NOTIFY_STAMP = os.path.join(SPOOL, "last-notify")
 SPOKE_STAMP = os.path.join(SPOOL, "last-spoke")
 STOP_STAMP = os.path.join(SPOOL, "last-stop")
+# The newest explicit request (a replay from the card, say.py). Requests
+# queue behind the playback lock; an older one that finds it is no longer
+# the newest gives way instead of playing over the click that replaced it.
+LATEST_ASK = os.path.join(SPOOL, "latest-ask")
 CONFIG = os.path.expanduser("~/.cc-pill/config.json")
 
 MODEL_ONNX = os.path.join(VOICE_DIR, "models", "kokoro-v1.0.onnx")
@@ -424,6 +428,28 @@ def player_command(wav, volume):
     return None
 
 
+def claim_ask():
+    """Mark a new explicit request as the newest one. Returns its token."""
+    token = f"{os.getpid()}-{time.time_ns()}"
+    try:
+        os.makedirs(SPOOL, exist_ok=True)
+        tmp = LATEST_ASK + f".{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write(token)
+        os.replace(tmp, LATEST_ASK)
+    except OSError:
+        pass
+    return token
+
+
+def ask_is_latest(token):
+    try:
+        with open(LATEST_ASK) as f:
+            return f.read().strip() == token
+    except OSError:
+        return True   # nothing to compare with: play
+
+
 def stop_playback():
     """Cut whatever is being spoken right now (an explicit ask preempts it)."""
     try:
@@ -453,7 +479,11 @@ def wait_for_gap(cfg, now=time.time, sleep=time.sleep):
     return 0.0
 
 
-def speak(text, cfg, meta=None, announce=True):
+def speak(text, cfg, meta=None, announce=True, ask=None):
+    """Synthesize and play `text`. With `ask` (a claim_ask token), give way
+    if a newer explicit request came in while this one waited its turn."""
+    if ask is not None and not ask_is_latest(ask):
+        return   # already replaced: skip the synthesis
     import soundfile as sf
     from kokoro_onnx import Kokoro
 
@@ -493,9 +523,19 @@ def speak(text, cfg, meta=None, announce=True):
                 continue
             time.sleep(0.5)
             waited += 0.5
+    if ask is not None and not ask_is_latest(ask):
+        # A newer click replaced this one while it was synthesized or waited
+        # for the lock: play nothing, and hand the lock on at once.
+        for p in (LOCK, wav):
+            try:
+                os.unlink(p)
+            except FileNotFoundError:
+                pass
+        return
     # Leave a breath after the previous briefing, so two that queue up behind
-    # each other don't run together.
-    wait_for_gap(cfg)
+    # each other don't run together. An explicit ask is answered at once.
+    if ask is None:
+        wait_for_gap(cfg)
     # Duck: pause whatever the user is listening to, speak, then resume it.
     ducked = duck_begin()
     if ducked:

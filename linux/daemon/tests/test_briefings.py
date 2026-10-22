@@ -207,6 +207,81 @@ class StopButtonTest(ContainerBase):
         self.assertNotEqual(self.store.snapshot()["pill"]["state"], "speaking")
 
 
+class FakeSamples:
+    """Stands in for the engine's numpy array: scaled by volume, 0.1 s long."""
+
+    def __mul__(self, k):
+        return self
+
+    def __len__(self):
+        return 2400
+
+
+class ReplayRaceTest(unittest.TestCase):
+    """Clicking replay on one row, then another, must play the second one,
+    not the first one that was still being synthesized."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.patches = [mock.patch.object(worker, n, os.path.join(self.tmp, v)) for n, v in (
+            ("SPOOL", ""), ("LOCK", "playback.lock"), ("PLAYER_PID", "player.pid"),
+            ("SPOKE_STAMP", "last-spoke"), ("LATEST_ASK", "latest-ask"))]
+        self.played = []
+        import threading
+        self.synth_gate = {}
+
+        class FakeKokoro:
+            def __init__(kself, *a):
+                pass
+
+            def create(kself, text, voice, speed):
+                gate = self.synth_gate.get(text)
+                if gate:
+                    gate.wait(5)        # "still synthesizing"
+                return FakeSamples(), 24000
+
+        fake_kokoro = mock.Mock(Kokoro=FakeKokoro)
+        fake_sf = mock.Mock(write=lambda path, samples, sr: open(path, "w").close())
+        self.patches += [mock.patch.dict(sys.modules, {"kokoro_onnx": fake_kokoro, "soundfile": fake_sf}),
+                         mock.patch.object(worker, "player_command", lambda wav, vol: ["true"]),
+                         mock.patch.object(worker, "duck_begin", lambda: None),
+                         mock.patch.object(worker, "pill_event", lambda e: self.played.append(e["text"]))]
+        for p in self.patches:
+            p.start()
+        self.threading = threading
+
+    def tearDown(self):
+        for p in reversed(self.patches):
+            p.stop()
+        shutil.rmtree(self.tmp)
+
+    def test_a_newer_click_replaces_one_still_synthesizing(self):
+        cfg = {"voice": "v", "speed": 1.0, "volume": 0.5}
+        self.synth_gate["A"] = self.threading.Event()
+        token_a = worker.claim_ask()
+        a = self.threading.Thread(target=worker.speak, args=("A", cfg), kwargs={"ask": token_a})
+        a.start()                           # A is synthesizing...
+        token_b = worker.claim_ask()        # ...when B is clicked
+        worker.speak("B", cfg, ask=token_b)
+        self.synth_gate["A"].set()          # A finishes synthesizing late
+        a.join(5)
+        self.assertEqual(self.played, ["B"])
+        self.assertFalse(os.path.exists(worker.LOCK), "the lock must be handed on")
+
+    def test_stop_cancels_a_waiting_replay(self):
+        cfg = {"voice": "v", "speed": 1.0, "volume": 0.5}
+        token = worker.claim_ask()
+        worker.claim_ask()                  # say.py --stop claims too
+        worker.speak("A", cfg, ask=token)
+        self.assertEqual(self.played, [])
+
+    def test_automatic_briefings_are_not_affected(self):
+        cfg = {"voice": "v", "speed": 1.0, "volume": 0.5, "briefing_gap_seconds": 0}
+        worker.claim_ask()
+        worker.speak("auto", cfg)           # a worker's briefing has no ask token
+        self.assertEqual(self.played, ["auto"])
+
+
 class WorkerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
