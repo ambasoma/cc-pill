@@ -166,6 +166,15 @@ def add(container, user, cfg, port, home=None):
     tokens = cfg.setdefault("containers", {})
     token = tokens.get(container) or secrets.token_urlsafe(24)
     tokens[container] = token
+    # Not root: the daemon runs tmux as this uid, to reach this user's sessions.
+    users = cfg.setdefault("container_users", {})
+    uid = sh(container, f"id -u {shlex.quote(user)}").stdout.strip()
+    if user != "root" and uid.isdigit():
+        users[container] = int(uid)
+    else:
+        users.pop(container, None)
+    if not users:
+        cfg.pop("container_users", None)
 
     with open(HOOK_SRC) as f:
         hook = f.read()
@@ -207,6 +216,9 @@ def running(container):
 def remove(container, user, cfg, home=None):
     tokens = cfg.get("containers") or {}
     tokens.pop(container, None)
+    (cfg.get("container_users") or {}).pop(container, None)
+    if not cfg.get("container_users"):
+        cfg.pop("container_users", None)
     if not tokens:
         cfg.pop("containers", None)
         cfg.pop("bridge_host", None)

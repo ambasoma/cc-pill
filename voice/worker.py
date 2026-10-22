@@ -368,7 +368,7 @@ def terminal_in_front():
     return bool(cls) and (cls in TERMINAL_CLASSES or cls.split(".")[-1] in TERMINAL_CLASSES)
 
 
-def session_on_screen(cwd, container=""):
+def session_on_screen(cwd, exec_prefix=()):
     """True when the user is already looking at this session's terminal.
 
     Precise when the session runs under tmux (the claude wrapper, or any
@@ -378,11 +378,11 @@ def session_on_screen(cwd, container=""):
     if not terminal_in_front():
         return False
     if cwd:
-        # A container session's panes live in the container's own tmux.
-        prefix = [shutil.which("lxc") or "lxc", "exec", container, "--"] if container else []
+        # A container session's panes live in the container's own tmux:
+        # the daemon puts the `lxc exec` prefix in the job.
         try:
             out = subprocess.run(
-                prefix + ["tmux", "list-panes", "-a", "-F",
+                list(exec_prefix) + ["tmux", "list-panes", "-a", "-F",
                           "#{session_attached}\t#{window_active}\t#{pane_active}\t#{pane_current_path}"],
                 capture_output=True, text=True, timeout=3,
             )
@@ -681,7 +681,7 @@ def main():
     # Courtesy: if the user is already looking at this session's terminal,
     # the briefing is redundant. Log it (for replay and the pill) but stay
     # quiet.
-    if session_on_screen(payload.get("cwd", ""), container):
+    if session_on_screen(payload.get("cwd", ""), payload.get("exec_prefix") or []):
         print(f"[{time.strftime('%H:%M:%S')}] (terminal on screen, stayed quiet)", flush=True)
         # Silent bloom: the pill still shows the text, just without audio.
         pill_event({

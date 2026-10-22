@@ -116,6 +116,13 @@ class ContainerActionsTest(ContainerBase):
         self.store.apply_container("web-dev", evt("start", sid="c1", pid=3535, cwd="/root/w/api", repo="api"))
         self.lxc_tmux = ["/usr/bin/lxc", "exec", "web-dev", "--", "tmux"]
 
+    def test_a_non_root_user_gets_lxc_exec_user(self):
+        self.config.container_users = {"web-dev": 1000}
+        self.assertEqual(self.store.in_container("web-dev", ["tmux", "ls"]),
+                         ["/usr/bin/lxc", "exec", "web-dev", "--user", "1000", "--", "tmux", "ls"])
+        self.assertEqual(self.store.in_container("dev2", ["tmux", "ls"])[:4],
+                         ["/usr/bin/lxc", "exec", "dev2", "--"])
+
     def test_send_prompt_goes_through_lxc_exec(self):
         self.runner.rules = [(self.lxc_tmux + ["list-panes"], ("%3\t0\t/root/w/api\t50\n", 0)),
                              (self.lxc_tmux + ["send-keys"], ("", 0))]
@@ -287,8 +294,24 @@ class AncestorPidsTest(unittest.TestCase):
                 os.makedirs(os.path.join(proc, str(pid)))
                 with open(os.path.join(proc, str(pid), "status"), "w") as f:
                     f.write(f"Name:\tclaude\nPPid:\t{ppid}\nNSpid:\t{ns}\n")
-            self.assertEqual(ccpilld.ancestor_pids(11875, proc), {3535, 3472, 1})
+            self.assertEqual(ccpilld.ancestor_pids(11875, proc, depth=1), {3535, 3472, 1})
+            self.assertEqual(ccpilld.ancestor_pids(11875, proc), {11875, 11800, 1500})   # host view
             self.assertEqual(ccpilld.ancestor_pids(424242, proc), set())
+        finally:
+            shutil.rmtree(proc)
+
+    def test_a_sandbox_inside_the_container_is_not_mistaken_for_the_session(self):
+        # host 11875 is the session (container pid 3535); host 12000 is a
+        # process in a bwrap sandbox whose innermost pid is also 3535
+        proc = tempfile.mkdtemp()
+        try:
+            for pid, ns in ((12000, "12000\t4100\t3535"), (11875, "11875\t3535")):
+                os.makedirs(os.path.join(proc, str(pid)))
+                with open(os.path.join(proc, str(pid), "status"), "w") as f:
+                    f.write(f"Name:\tx\nNSpid:\t{ns}\n")
+                with open(os.path.join(proc, str(pid), "cgroup"), "w") as f:
+                    f.write("0::/lxc.payload.web-dev/user.slice\n")
+            self.assertEqual(ccpilld.container_host_pid("web-dev", 3535, proc), 11875)
         finally:
             shutil.rmtree(proc)
 

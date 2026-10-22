@@ -20,7 +20,7 @@ from test_containers import REPO, ContainerBase, hook, load  # noqa: E402
 worker = load("worker_br", os.path.join(REPO, "voice", "worker.py"))
 
 
-class DaemonHandoffTest(ContainerBase):
+class HandoffBase(ContainerBase):
     def setUp(self):
         super().setUp()
         os.makedirs(os.path.join(self.speaker, ".venv", "bin"))
@@ -34,6 +34,12 @@ class DaemonHandoffTest(ContainerBase):
                 out.append(json.load(f))
         return out
 
+    def assert_no_job(self):
+        self.assertEqual(self.jobs(), [])
+        self.assertEqual(self.spawner.calls, [])
+
+
+class DaemonHandoffTest(HandoffBase):
     def test_stop_queues_a_job_with_the_message_and_container(self):
         self.store.apply_container("web-dev", evt("stop", sid="c1", pid=3535, cwd="/root/w/api",
                                                    speech={"text": "Done. All 41 tests pass."}))
@@ -42,6 +48,7 @@ class DaemonHandoffTest(ContainerBase):
         self.assertEqual(job["pill_mode"], "stop")
         self.assertEqual(job["last_assistant_message"], "Done. All 41 tests pass.")
         self.assertEqual(job["cwd"], "/root/w/api")
+        self.assertEqual(job["exec_prefix"][1:], ["exec", "web-dev", "--"])
         args, _ = self.spawner.calls[0]
         self.assertEqual(args[-3:-1], [os.path.join(self.speaker, ".venv", "bin", "python"),
                                        os.path.join(self.speaker, "worker.py")])
@@ -60,20 +67,30 @@ class DaemonHandoffTest(ContainerBase):
         self.assertEqual(self.store.sessions[0].state, "done")
         self.assertNotIn("speech", json.dumps(self.store.snapshot()))
 
-    def test_no_job_when_muted_missing_remote_empty_or_not_a_turn_end(self):
+    def test_no_job_when_muted(self):
         open(os.path.join(self.speaker, ".off"), "w").close()
         self.store.apply_container("web-dev", evt("stop", speech={"text": "muted"}))
-        os.remove(os.path.join(self.speaker, ".off"))
+        self.assert_no_job()
+
+    def test_no_job_for_ssh_from_elsewhere(self):
         self.store.apply_container("web-dev", evt("stop", ssh_client="203.0.113.9", speech={"text": "far"}))
+        self.assert_no_job()
+
+    def test_no_job_for_an_empty_message(self):
         self.store.apply_container("web-dev", evt("stop", speech={"text": "  "}))
+        self.assert_no_job()
+
+    def test_no_job_for_events_that_are_not_a_turn_end(self):
         self.store.apply_container("web-dev", evt("prompt", speech={"text": "a prompt"}))
+        self.assert_no_job()
+
+    def test_no_job_without_a_voice(self):
         shutil.rmtree(os.path.join(self.speaker, ".venv"))
         self.store.apply_container("web-dev", evt("stop", speech={"text": "no voice"}))
-        self.assertEqual(self.jobs(), [])
-        self.assertEqual(self.spawner.calls, [])
+        self.assert_no_job()
 
 
-class ReviewFixesTest(DaemonHandoffTest):
+class ReviewFixesTest(HandoffBase):
     """Limits on what a container can make the host do."""
 
     def test_one_briefing_per_session_per_window(self):
@@ -372,7 +389,7 @@ class WorkerTest(unittest.TestCase):
         cfg = dict(worker.load_config(), enabled=True)
         with mock.patch.object(worker, "load_config", lambda: cfg), \
                 mock.patch.object(worker, "summarize", lambda *a, **k: self.fail("Haiku was called")), \
-                mock.patch.object(worker, "session_on_screen", lambda cwd, ct="": False), \
+                mock.patch.object(worker, "session_on_screen", lambda cwd, prefix=(): False), \
                 mock.patch.object(worker, "speak", lambda text, cfg, meta=None: spoken.update(text=text)), \
                 mock.patch.object(worker, "NOTIFY_STAMP", os.path.join(self.tmp, "last-notify")), \
                 mock.patch.object(worker, "SPOOL", self.tmp), \
@@ -384,19 +401,20 @@ class WorkerTest(unittest.TestCase):
         job = os.path.join(self.tmp, "job.json")
         with open(job, "w") as f:
             json.dump({"pill_mode": "stop", "container": "web-dev", "session_id": "s1",
-                       "cwd": "/root/workspace/todo-app", "last_assistant_message": "Done, all green."}, f)
+                       "cwd": "/root/workspace/todo-app", "last_assistant_message": "Done, all green.",
+                       "exec_prefix": ["lxc", "exec", "web-dev", "--"]}, f)
         spoken = {}
         cfg = dict(worker.load_config(), enabled=True)
         with mock.patch.object(worker, "load_config", lambda: cfg), \
                 mock.patch.object(worker, "summarize", lambda *a, **k: "Everything passes now."), \
-                mock.patch.object(worker, "session_on_screen", lambda cwd, ct="": spoken.setdefault("screen", (cwd, ct)) and False), \
+                mock.patch.object(worker, "session_on_screen", lambda cwd, prefix=(): spoken.setdefault("screen", (cwd, prefix)) and False), \
                 mock.patch.object(worker, "speak", lambda text, cfg, meta=None: spoken.update(text=text, meta=meta)), \
                 mock.patch.object(worker, "STOP_STAMP", os.path.join(self.tmp, "last-stop")), \
                 mock.patch.object(sys, "argv", ["worker.py", job]):
             worker.main()
         self.assertEqual(spoken["text"], "web dev: Everything passes now.")
         self.assertEqual(spoken["meta"], {"sid": "s1", "repo": "todo-app"})
-        self.assertEqual(spoken["screen"], ("/root/workspace/todo-app", "web-dev"))
+        self.assertEqual(spoken["screen"], ("/root/workspace/todo-app", ["lxc", "exec", "web-dev", "--"]))
 
     def test_host_briefing_has_no_prefix(self):
         job = os.path.join(self.tmp, "job.json")
@@ -407,7 +425,7 @@ class WorkerTest(unittest.TestCase):
         cfg = dict(worker.load_config(), enabled=True)
         with mock.patch.object(worker, "load_config", lambda: cfg), \
                 mock.patch.object(worker, "summarize", lambda *a, **k: "All done."), \
-                mock.patch.object(worker, "session_on_screen", lambda cwd, ct="": False), \
+                mock.patch.object(worker, "session_on_screen", lambda cwd, prefix=(): False), \
                 mock.patch.object(worker, "speak", lambda text, cfg, meta=None: spoken.update(text=text)), \
                 mock.patch.object(worker, "STOP_STAMP", os.path.join(self.tmp, "last-stop")), \
                 mock.patch.object(sys, "argv", ["worker.py", job]):

@@ -88,7 +88,7 @@ class Base(unittest.TestCase):
         self.store = ccpilld.Store(self.config, clock=self.clock, runner=self.runner,
                                    spawner=self.spawner, alive=lambda pid: pid not in self.dead,
                                    rng=lambda: 0.1, sleeper=lambda s: None,
-                                   ancestors=lambda pid: self.tree.get(pid, set()))
+                                   ancestors=lambda pid, depth=0: self.tree.get(pid, set()))
         self.tree = {}   # fake process tree: pid -> {pid and its ancestors}
 
     def tearDown(self):

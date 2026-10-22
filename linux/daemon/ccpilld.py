@@ -127,6 +127,11 @@ class Config:
         ct = data.get("containers")
         self.containers = {str(k): str(v) for k, v in ct.items() if v} if isinstance(ct, dict) else {}
         self.lxc_bin = data.get("lxc_bin") or shutil.which("lxc") or "/snap/bin/lxc"
+        # The uid Claude Code runs as inside a container, when it isn't root
+        # (cc-pill-containers add --user): tmux runs as that user.
+        cu = data.get("container_users")
+        self.container_users = {str(k): v for k, v in cu.items()
+                                if isinstance(v, int) and v > 0} if isinstance(cu, dict) else {}
 
     @classmethod
     def load(cls, path=CONFIG_PATH):
@@ -223,7 +228,7 @@ def container_host_pid(container, nspid, proc="/proc"):
     """The host pid of process `nspid` inside LXD container `container`, or 0.
 
     Container processes are visible on the host: their cgroup path names the
-    container (lxc.payload.<name>) and the last NSpid field is the pid as the
+    container (lxc.payload.<name>) and the second NSpid field is the pid as the
     container sees it. Owned by a mapped uid, so kill(pid, 0) answers EPERM,
     which pid_alive already counts as alive."""
     marker = f"/lxc.payload.{container}/"
@@ -237,7 +242,10 @@ def container_host_pid(container, nspid, proc="/proc"):
         try:
             with open(f"{proc}/{name}/status") as f:
                 ns = next((l.split()[1:] for l in f if l.startswith("NSpid:")), None)
-            if not ns or len(ns) < 2 or ns[-1] != str(nspid):
+            # ns[1]: the container's own namespace. A deeper field belongs
+            # to a sandbox inside the container (bwrap, docker), whose pids
+            # can repeat the session's number.
+            if not ns or len(ns) < 2 or ns[1] != str(nspid):
                 continue
             with open(f"{proc}/{name}/cgroup") as f:
                 cg = f.read()
@@ -248,16 +256,16 @@ def container_host_pid(container, nspid, proc="/proc"):
     return 0
 
 
-def ancestor_pids(pid, proc="/proc", limit=40):
-    """`pid` and its ancestors, each as its own pid namespace sees it (the
-    last NSpid field): for a process in a container that is the pid its
-    tmux reports as pane_pid, on the host it is the plain pid."""
+def ancestor_pids(pid, proc="/proc", limit=40, depth=0):
+    """`pid` and its ancestors, as pid namespace `depth` sees them: 0 is the
+    host, 1 a top-level LXD container, where tmux reports its pane_pid."""
     seen = set()
     while pid > 1 and len(seen) < limit:
         try:
             with open(f"{proc}/{pid}/status") as f:
                 fields = dict(l.split(":", 1) for l in f if ":" in l)
-            seen.add(int(fields["NSpid"].split()[-1]))
+            ns = fields["NSpid"].split()
+            seen.add(int(ns[min(depth, len(ns) - 1)]))
             pid = int(fields["PPid"].split()[0])
         except (OSError, KeyError, ValueError, IndexError):
             break
@@ -488,11 +496,13 @@ class Store:
             log(f"briefing skipped: {waiting} already waiting")
             return False
         job = {
-            "pill_mode": evt.get("type"), "container": container,
-            "session_id": evt.get("sid") or "", "cwd": evt.get("cwd") or "",
-            "last_assistant_message": str(speech.get("text") or "")[:8000],
-            "message": str(evt.get("msg") or "")[:2000],
-            "notification_type": str(speech.get("notification_type") or ""),
+            "pill_mode": evt["type"], "container": container,
+            "session_id": evt["sid"], "cwd": evt["cwd"],
+            "last_assistant_message": speech.get("text", "")[:8000],
+            "message": evt["msg"][:2000],
+            "notification_type": speech.get("notification_type", ""),
+            # how the worker reaches the container's tmux
+            "exec_prefix": self.in_container(container, []),
         }
         if job["pill_mode"] == "stop" and not job["last_assistant_message"].strip():
             return False
@@ -858,7 +868,9 @@ class Store:
         if not container:
             return list(args)
         env = ["--env", "TERM=xterm-256color"] if interactive else []
-        return [self.config.lxc_bin, "exec", container] + env + ["--"] + list(args)
+        uid = self.config.container_users.get(container)
+        user = ["--user", str(uid)] if uid else []
+        return [self.config.lxc_bin, "exec", container] + user + env + ["--"] + list(args)
 
     def tmux(self, container, *args):
         return self.run(self.in_container(container, ["tmux"] + list(args)))
@@ -876,7 +888,7 @@ class Store:
             return None
         panes = [p for p in (line.split("\t") for line in out.splitlines()) if len(p) == 4]
         if pid > 0:
-            mine = self.ancestors(pid)
+            mine = self.ancestors(pid, depth=1 if container else 0)
             for p in panes:
                 if p[3].isdigit() and int(p[3]) in mine:
                     return p[0], p[1]
