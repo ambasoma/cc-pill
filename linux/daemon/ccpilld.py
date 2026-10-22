@@ -13,8 +13,8 @@ What it does, one for one with app/Sources/Pill/Model.swift:
     what the newest working session is doing, reaps dead sessions, garbage
     collects idle pill-launched tmux sessions
   * runs the briefing bloom and the critter moments on the same timings
-  * performs the card's actions: replay briefing, open terminal, send a
-    prompt to a session, launch a hands-free session, mute, stop speech
+  * performs the card's actions: replay briefing, send a prompt to a
+    session, launch a hands-free session, mute, stop speech
   * optionally takes events from Claude Code sessions inside LXD containers,
     posted by the same hook over the LXD bridge (see "containers" below)
 
@@ -74,19 +74,6 @@ SPARE_CWD_RE = re.compile(r"/cc-daemon-[^/]+/[^/]+/spare(/|$)")
 
 SAD_RE = re.compile(r"fail(ed|ing)?|error|broke|broken|couldn.t|didn.t work|crash", re.I)
 
-# How each terminal takes a command to run. Unknown terminals get "-e".
-TERMINAL_EXEC = {
-    "konsole": ["konsole", "-e"],
-    "kitty": ["kitty"],
-    "alacritty": ["alacritty", "-e"],
-    "wezterm": ["wezterm", "start", "--"],
-    "ghostty": ["ghostty", "-e"],
-    "foot": ["foot"],
-    "gnome-terminal": ["gnome-terminal", "--"],
-    "xterm": ["xterm", "-e"],
-}
-
-
 # ---------------------------------------------------------------- logging
 
 def log(msg):
@@ -111,8 +98,6 @@ class Config:
         self.home_repo = os.path.expanduser(data.get("home_repo") or os.path.expanduser("~"))
         self.pill_system_prompt = data.get("pill_system_prompt") or ""
         self.permission_mode = data.get("permission_mode") or "acceptEdits"
-        # On Linux this is a terminal command (konsole, kitty, ...), not a bundle id.
-        self.terminal = data.get("terminal") or "konsole"
         self.hotkey = data.get("hotkey") or "meta+alt+m"
         self.claude_bin = data.get("claude_bin") or find_claude()
         gc = data.get("pill_gc_minutes", 30)
@@ -858,19 +843,14 @@ class Store:
         else:
             self.run(["pkill", "-f", "say-[0-9]+\\.wav"], timeout=5)
 
-    def in_container(self, container, args, interactive=False):
+    def in_container(self, container, args):
         """`args` as a command line that runs where the session lives: as is
-        on the host, through `lxc exec` for a session in an LXD container.
-
-        lxc exec hands the container the host terminal's TERM, and a
-        container rarely has terminfo for newer terminals (xterm-ghostty,
-        xterm-kitty): interactive commands get a TERM every system knows."""
+        on the host, through `lxc exec` for a session in an LXD container."""
         if not container:
             return list(args)
-        env = ["--env", "TERM=xterm-256color"] if interactive else []
         uid = self.config.container_users.get(container)
         user = ["--user", str(uid)] if uid else []
-        return [self.config.lxc_bin, "exec", container] + user + env + ["--"] + list(args)
+        return [self.config.lxc_bin, "exec", container] + user + ["--"] + list(args)
 
     def tmux(self, container, *args):
         return self.run(self.in_container(container, ["tmux"] + list(args)))
@@ -930,63 +910,6 @@ class Store:
         log(f"place: {edge} {align}")
         self.flash("Moving the widget…")
         return self.spawn([sys.executable, script, "--edge", edge, "--align", align])
-
-    def terminal_command(self, tail):
-        """Command line that opens the configured terminal running `tail`."""
-        term = self.config.terminal.strip() or "konsole"
-        if not tail:
-            return [term]
-        known = TERMINAL_EXEC.get(os.path.basename(term))
-        # Keep the user's spelling (it may be a full path); take the flags.
-        flags = known[1:] if known is not None else ["-e"]
-        return [term] + flags + tail
-
-    def open_terminal(self, sid):
-        s = self._find(sid)
-        if s is None:
-            return False
-        ct = s.container
-        # A container path means nothing on the host: open the terminal in home.
-        cwd = (s.cwd or None) if not ct else None
-        pane = self.tmux_pane(s.cwd, ct, s.pid)
-        if pane:
-            pane_id, sess = pane
-            clients, _ = self.tmux(ct, "list-clients", "-F", "#{client_name}")
-            names = [c for c in clients.splitlines() if c.strip()]
-            if names:
-                # The pane, not just its session: sessions often live as windows
-                # of one tmux session, and a pane target selects window and pane.
-                self.tmux(ct, "switch-client", "-c", names[0], "-t", pane_id)
-                log(f"switched client {names[0]} to {sess} {pane_id}" + (f" in {ct}" if ct else ""))
-                self._activate_terminal()
-                return True
-            log(f"no attached tmux client; opening {self.config.terminal} on {sess}")
-            return self.spawn(self.terminal_command(
-                self.in_container(ct, ["tmux", "attach", "-t", sess], interactive=True)), cwd=cwd)
-        if ct:
-            log(f"no tmux pane for {s.cwd} in {ct}; opening a shell there")
-            return self.spawn(self.terminal_command(self.in_container(ct, ["bash", "-l"], interactive=True)))
-        log(f"no tmux pane for {s.cwd}; focusing the terminal")
-        if not self._activate_terminal():
-            return self.spawn(self.terminal_command([]), cwd=s.cwd or None)
-        return True
-
-    def _activate_terminal(self):
-        """Raise an existing terminal window (kdotool on KWin, xdotool on X11)."""
-        term = os.path.basename(self.config.terminal)
-        if shutil.which("kdotool"):
-            out, code = self.run(["kdotool", "search", "--class", term])
-            ids = [w for w in out.split() if w]
-            if code == 0 and ids:
-                self.run(["kdotool", "windowactivate", ids[0]])
-                return True
-        if shutil.which("xdotool") and os.environ.get("DISPLAY"):
-            out, code = self.run(["xdotool", "search", "--class", term])
-            ids = [w for w in out.split() if w]
-            if code == 0 and ids:
-                self.run(["xdotool", "windowactivate", ids[-1]])
-                return True
-        return False
 
     def send_prompt(self, sid, text):
         s = self._find(sid)
@@ -1182,8 +1105,6 @@ def make_handler(store, bridge=False):
                 ok = store.launch_session(text, wait=False)
             elif route == "/recap":
                 ok = store.recap(sid)
-            elif route == "/terminal":
-                ok = store.open_terminal(sid)
             elif route == "/prompt":
                 ok = store.send_prompt(sid, text)
             elif route == "/mute":

@@ -20,7 +20,7 @@ depends=('plasma-workspace' 'python' 'tmux' 'jq' 'curl' 'bash')
 optdepends=('kdialog: the ask-mode prompt box (zenity works too)'
             'gum: the setup TUI'
             'playerctl: duck your music while the voice speaks'
-            'kdotool: stay silent when that terminal is on screen; raise terminals from the card'
+            'kdotool: stay silent when that terminal is on screen'
             'pipewire-audio: voice playback through pw-play')
 makedepends=('git')
 provides=('cc-pill-kde')

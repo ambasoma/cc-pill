@@ -130,33 +130,6 @@ class ContainerActionsTest(ContainerBase):
         self.assertEqual(self.runner.called(*self.lxc_tmux, "send-keys")[0][-3:], ["%3", "-l", "run the tests"])
         self.assertEqual(self.runner.called("tmux"), [])
 
-    def test_open_terminal_switches_the_containers_client(self):
-        self.runner.rules = [(self.lxc_tmux + ["list-panes"], ("%3\t0\t/root/w/api\t50\n", 0)),
-                             (self.lxc_tmux + ["list-clients"], ("/dev/pts/1\n", 0))]
-        self.assertTrue(self.store.open_terminal("c1"))
-        self.assertEqual(self.runner.called(*self.lxc_tmux, "switch-client")[0][-4:],
-                         ["-c", "/dev/pts/1", "-t", "%3"])
-
-    def test_open_terminal_attaches_when_nobody_is_attached(self):
-        self.runner.rules = [(self.lxc_tmux + ["list-panes"], ("%3\twork\t/root/w/api\t50\n", 0))]
-        self.assertTrue(self.store.open_terminal("c1"))
-        args, cwd = self.spawner.calls[0]
-        self.assertEqual(args, ["konsole", "-e", "/usr/bin/lxc", "exec", "web-dev", "--env", "TERM=xterm-256color",
-                                "--", "tmux", "attach", "-t", "work"])
-        self.assertIsNone(cwd)   # /root/w/api is a container path
-
-    def test_open_terminal_without_tmux_opens_a_shell_inside(self):
-        self.assertTrue(self.store.open_terminal("c1"))
-        self.assertEqual(self.spawner.calls[0][0],
-                         ["konsole", "-e", "/usr/bin/lxc", "exec", "web-dev", "--env", "TERM=xterm-256color",
-                          "--", "bash", "-l"])
-
-    def test_ghostty_takes_the_command_after_dash_e(self):
-        self.config.terminal = "ghostty"
-        self.runner.rules = [(self.lxc_tmux + ["list-panes"], ("%3\twork\t/root/w/api\t50\n", 0))]
-        self.assertTrue(self.store.open_terminal("c1"))
-        self.assertEqual(self.spawner.calls[0][0][:3], ["ghostty", "-e", "/usr/bin/lxc"])
-
     # A container with four panes in /root/workspace/todo-app, and
     # sessions that share it or moved into a subdirectory.
     WEB_PANES = ("%0\t0\t/root/workspace/todo-app\t3472\n%5\t0\t/root/workspace/todo-app\t9000\n"
@@ -236,7 +209,7 @@ class BridgeHttpTest(ContainerBase):
         self.assertEqual(self.post("/event", {"container": "evil", "event": evt("prompt")}, token=""), 403)
 
     def test_only_event_is_served(self):
-        for path in ("/ask", "/prompt", "/terminal", "/mute", "/stop", "/place"):
+        for path in ("/ask", "/prompt", "/mute", "/stop", "/place"):
             self.assertEqual(self.post(path, {"text": "x", "sid": "s1"}), 404, path)
         r = urllib.request.Request(f"http://127.0.0.1:{self.port}/state", headers={ccpilld.API_HEADER: "1"})
         with self.assertRaises(urllib.error.HTTPError) as cm:

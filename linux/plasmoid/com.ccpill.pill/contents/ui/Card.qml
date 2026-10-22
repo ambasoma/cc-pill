@@ -1,7 +1,7 @@
 /*
  * The session card: full representation, shown as the Plasma popup when the
  * pill is clicked. One row per session: its state, what it is doing, its
- * last briefing, and replay, send-a-prompt and open-terminal buttons. A pin
+ * last briefing, and replay and send-a-prompt buttons. A pin
  * keeps the card open; the footer holds the voice and its mute toggle.
  */
 pragma ComponentBehavior: Bound
@@ -250,20 +250,6 @@ Item {
                                 opacity: row.active || activeFocus ? 1 : 0
                                 Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
                                 onClicked: card.inputFor = row.typing ? "" : row.modelData.id
-                                Accessible.name: text
-                                PlasmaComponents3.ToolTip.text: text
-                                PlasmaComponents3.ToolTip.visible: hovered
-                            }
-                            PlasmaComponents3.ToolButton {
-                                display: PlasmaComponents3.AbstractButton.IconOnly
-                                icon.name: "utilities-terminal-symbolic"
-                                text: "Open its terminal"
-                                opacity: row.active || activeFocus ? 1 : 0
-                                Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
-                                onClicked: {
-                                    card.ctl.post("/terminal", { sid: row.modelData.id })
-                                    card.ctl.expanded = false
-                                }
                                 Accessible.name: text
                                 PlasmaComponents3.ToolTip.text: text
                                 PlasmaComponents3.ToolTip.visible: hovered

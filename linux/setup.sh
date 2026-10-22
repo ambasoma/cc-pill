@@ -552,24 +552,8 @@ fi
 mkdir -p "$DATA"
 VOICE=$(voice_dir "$INSTALL")
 
-# ---------- 2. terminal ----------
-head_ "2 · Which terminal do you use?" "The card's open-terminal button opens or raises this one."
-TERMNAMES=()
-for t in konsole kitty alacritty wezterm ghostty foot gnome-terminal xterm; do
-  command -v "$t" >/dev/null && TERMNAMES+=("$t")
-done
-TERMNAMES+=("other (type a command)")
-TCHOICE=""
-ui_choose TCHOICE "Your terminal" "${TERMNAMES[@]}"
-if [ "$TCHOICE" = "other (type a command)" ]; then
-  ui_input TERMINAL "Terminal command (must accept -e <command>)" "konsole"
-else
-  TERMINAL="$TCHOICE"
-fi
-ok "terminal: $TERMINAL"
-
-# ---------- 3. hotkey ----------
-head_ "3 · Ask-mode hotkey" "Press it anywhere to start a Claude session from a prompt box."
+# ---------- 2. hotkey ----------
+head_ "2 · Ask-mode hotkey" "Press it anywhere to start a Claude session from a prompt box."
 while true; do
   ui_input HOTKEY "Hotkey (modifiers+key, e.g. meta+alt+m, ctrl+shift+space)" "meta+alt+m"
   if KDEHOTKEY=$(python3 - "$HOTKEY" <<'PYEOF'
@@ -592,8 +576,8 @@ PYEOF
 done
 ok "hotkey: $HOTKEY ($KDEHOTKEY)"
 
-# ---------- 4. pill sessions ----------
-head_ "4 · Pill-launched sessions" "How hands-free should hotkey-started sessions be?"
+# ---------- 3. pill sessions ----------
+head_ "3 · Pill-launched sessions" "How hands-free should hotkey-started sessions be?"
 M1="Auto-accept edits   · file edits proceed, other actions still ask (recommended)"
 M2="Fully hands-free    · skip ALL permission prompts (only for restorable machines)"
 M3="Normal              · every permission prompts, like your regular sessions"
@@ -611,19 +595,18 @@ if ui_confirm "Add extra system instructions for pill sessions?" "n"; then
   ui_write SYSPROMPT "System instructions"
 fi
 
-# ---------- 5. voice ----------
-head_ "5 · Voice briefings" "A local neural voice speaks a short summary when each turn finishes. One-time ~350MB model download; skip now and add later with: ./linux/setup.sh voice"
+# ---------- 4. voice ----------
+head_ "4 · Voice briefings" "A local neural voice speaks a short summary when each turn finishes. One-time ~350MB model download; skip now and add later with: ./linux/setup.sh voice"
 WANTVOICE="n"
 ui_confirm "Enable the voice?" "y" && WANTVOICE="y"
 
 # ---------- write base config ----------
-BASE_CFG=$(CCPILL_SP="$SYSPROMPT" python3 - "$WORKDIR" "$VOICE" "$PERM" "$TERMINAL" "$HOTKEY" <<'PYEOF'
+BASE_CFG=$(CCPILL_SP="$SYSPROMPT" python3 - "$WORKDIR" "$VOICE" "$PERM" "$HOTKEY" <<'PYEOF'
 import json, os, sys
-workdir, vdir, perm, terminal, hotkey = sys.argv[1:6]
+workdir, vdir, perm, hotkey = sys.argv[1:5]
 print(json.dumps({
     "home_repo": workdir,
     "permission_mode": perm,
-    "terminal": terminal,
     "hotkey": hotkey,
     "pill_gc_minutes": 30,
     "pill_system_prompt": os.environ.get("CCPILL_SP", ""),
@@ -746,7 +729,7 @@ if [ -n "$CONTAINERS" ]; then
 fi
 
 # ---------- optional tmux wrapper ----------
-head_ "Optional · tmux wrapper" "Lets the pill send prompts to and open your own interactive claude sessions."
+head_ "Optional · tmux wrapper" "Lets the pill send prompts to your own interactive claude sessions."
 if ui_confirm "Add the claude tmux wrapper to $SHELL_RC?" "y"; then
   if ! grep -q "cc-pill claude wrapper" "$SHELL_RC" 2>/dev/null; then
     if [ "$SHELL_RC" = "$HOME/.zshrc" ]; then
@@ -803,7 +786,7 @@ BRC
     ok "wrapper already present"
   fi
 else
-  warn "skipped; card prompt-send and open-terminal need it"
+  warn "skipped; the card's send-a-prompt needs it"
 fi
 
 # ---------- verify ----------

@@ -83,7 +83,7 @@ class Base(unittest.TestCase):
         self.runner = FakeRunner()
         self.spawner = FakeSpawner()
         self.dead = set()
-        self.config = ccpilld.Config({"speaker": self.speaker, "name": "Nova", "terminal": "konsole",
+        self.config = ccpilld.Config({"speaker": self.speaker, "name": "Nova",
                                       "home_repo": os.path.join(self.tmp, "work"), "claude_bin": "/x/claude"})
         self.store = ccpilld.Store(self.config, clock=self.clock, runner=self.runner,
                                    spawner=self.spawner, alive=lambda pid: pid not in self.dead,
@@ -470,7 +470,6 @@ class ConfigTest(unittest.TestCase):
         c = ccpilld.Config({})
         self.assertEqual(c.name, "Jarvis")
         self.assertEqual(c.permission_mode, "acceptEdits")
-        self.assertEqual(c.terminal, "konsole")
         self.assertEqual(c.port, ccpilld.DEFAULT_PORT)
         self.assertEqual(c.pill_gc_minutes, 30.0)
         self.assertTrue(c.speaker.endswith("/voice"))
@@ -499,18 +498,6 @@ class ConfigTest(unittest.TestCase):
 class ActionsTest(Base):
     PANES = "%3\tcc-demo\t/home/u/demo\t700\n%4\tmain\t/home/u\t701\n"
 
-    def test_terminal_command_table(self):
-        tail = ["tmux", "attach", "-t", "x"]
-        self.config.terminal = "konsole"
-        self.assertEqual(self.store.terminal_command(tail), ["konsole", "-e"] + tail)
-        self.config.terminal = "kitty"
-        self.assertEqual(self.store.terminal_command(tail), ["kitty"] + tail)
-        self.config.terminal = "/usr/bin/wezterm"
-        self.assertEqual(self.store.terminal_command(tail), ["/usr/bin/wezterm", "start", "--"] + tail)
-        self.config.terminal = "st"
-        self.assertEqual(self.store.terminal_command(tail), ["st", "-e"] + tail)
-        self.assertEqual(self.store.terminal_command([]), ["st"])
-
     def test_send_prompt(self):
         self.runner.rules.append((("tmux", "list-panes"), (self.PANES, 0)))
         self.runner.rules.append((("tmux", "send-keys"), ("", 0)))
@@ -528,23 +515,6 @@ class ActionsTest(Base):
         self.assertEqual(self.store.toast, "No tmux session for demo")
         self.assertFalse(self.store.send_prompt("s1", "   "))
         self.assertFalse(self.store.send_prompt("nope", "hello"))
-
-    def test_open_terminal_switches_attached_client(self):
-        self.runner.rules.append((("tmux", "list-panes"), (self.PANES, 0)))
-        self.runner.rules.append((("tmux", "list-clients"), ("/dev/pts/2\n", 0)))
-        self.store.apply(evt("start"))
-        self.assertTrue(self.store.open_terminal("s1"))
-        self.assertEqual(self.runner.called("tmux", "switch-client"),
-                         [["tmux", "switch-client", "-c", "/dev/pts/2", "-t", "%3"]])
-        self.assertEqual(self.spawner.calls, [])
-
-    def test_open_terminal_spawns_when_no_client(self):
-        self.runner.rules.append((("tmux", "list-panes"), (self.PANES, 0)))
-        self.runner.rules.append((("tmux", "list-clients"), ("", 0)))
-        self.store.apply(evt("start"))
-        self.assertTrue(self.store.open_terminal("s1"))
-        self.assertEqual(self.spawner.calls,
-                         [(["konsole", "-e", "tmux", "attach", "-t", "cc-demo"], "/home/u/demo")])
 
     def test_recap(self):
         self.store.apply(evt("start"))

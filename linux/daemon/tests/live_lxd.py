@@ -25,7 +25,7 @@ What it exercises, all for real:
     `ssh root@<container>.lxd` too (it may ask your ssh agent for a PIN/touch)
   * the bridge refuses bad tokens and serves nothing but POST /event
   * a card prompt delivered through `lxc exec ... tmux send-keys` into a
-    throwaway tmux session, and the open-terminal command line
+    throwaway tmux session
   * the widget (this checkout) loaded by plasmawindowed offscreen against
     the scratch daemon, card expanded: no QML errors, container shown
   * read-only: the parent chain of hook processes your running sessions
@@ -187,11 +187,6 @@ class Rig:
         cls.scratch = tempfile.mkdtemp(prefix="ccpill-itest-")
         data = os.path.join(cls.scratch, "data")
         os.makedirs(data)
-        cls.term_log = os.path.join(cls.scratch, "terminal.log")
-        term = os.path.join(cls.scratch, "fake-term")
-        with open(term, "w") as f:
-            f.write(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{cls.term_log}"\n')
-        os.chmod(term, 0o755)
         # A stand-in voice: its "python" only records the jobs it is handed.
         cls.voice = os.path.join(cls.scratch, "voice")
         cls.voice_jobs = os.path.join(cls.scratch, "voice-jobs")
@@ -203,7 +198,7 @@ class Rig:
             f.write(f'#!/bin/sh\n# $1 = worker.py, $2 = the job\nmv "$2" "{cls.voice_jobs}/"\necho "$1" > "{cls.voice_jobs}/.worker"\n')
         os.chmod(fake_py, 0o755)
         with open(os.path.join(data, "config.json"), "w") as f:
-            json.dump({"daemon_port": PORT, "terminal": term, "name": "Itest",
+            json.dump({"daemon_port": PORT, "name": "Itest",
                        "speaker": cls.voice}, f)
         cls.data = data
 
@@ -508,7 +503,7 @@ class T4_BridgeSecurity(unittest.TestCase):
     def test_only_event_is_reachable_from_containers(self):
         c = Rig.containers[0]
         token = Rig.config["containers"][c]
-        for path in ("/ask", "/prompt", "/terminal", "/mute", "/place", "/stop"):
+        for path in ("/ask", "/prompt", "/mute", "/place", "/stop"):
             self.assertEqual(self.curl(c, path, token), "404", path)
         url = f"http://{Rig.config['bridge_host']}:{PORT}/state"
         self.assertEqual(sh(c, f"curl -s -o /dev/null -w '%{{http_code}}' -m 3 -H 'X-CC-Pill: 1' {url}").strip(), "404")
@@ -541,25 +536,6 @@ class T5_CardActions(unittest.TestCase):
         pane = wait_for(lambda: f"hello from {TAG}" in sh(self.c, f"tmux capture-pane -p -t {TAG}:"), 5)
         self.assertTrue(pane)
 
-    def test_open_terminal_switches_an_attached_client_to_the_sessions_window(self):
-        # The web-dev layout: claude sessions as windows of one tmux session,
-        # a client attached showing another window. A throwaway client (under
-        # script(1) for a tty) in the throwaway session stands in for it.
-        sh(self.c, f"tmux new-window -d -t {TAG}: -c /tmp 'exec sleep 600'")
-        sh(self.c, f"(TERM=xterm-256color setsid script -qfc 'tmux attach -t {TAG}' /dev/null "
-                   f"</dev/null >/dev/null 2>&1 &)")
-        clients = wait_for(lambda: sh(self.c, f"tmux list-clients -t {TAG} -F '#{{window_index}}'").split(), 5)
-        if not clients:
-            self.skipTest("could not attach a test client (script(1) missing?)")
-        sh(self.c, f"tmux select-window -t {TAG}:1")
-        self.assertTrue(wait_for(lambda: sh(self.c, f"tmux list-clients -t {TAG} -F '#{{window_index}}'").split() == ["1"], 5))
-        code, r = api("/terminal", "POST", {"sid": self.sid})
-        self.assertEqual((code, r), (200, {"ok": True}))
-        self.assertTrue(wait_for(lambda: sh(self.c, f"tmux list-clients -t {TAG} -F '#{{window_index}}'").split() == ["0"], 5),
-                        "the client should now show the session's window\n"
-                        + sh(self.c, "tmux list-panes -a -F '#{pane_id} #{session_name}:#{window_index} #{pane_current_path}'")
-                        + daemon_log_tail())
-
     def test_prompt_finds_the_right_pane_when_sessions_share_a_directory(self):
         # Two stand-in claudes in two panes of one window, same directory: the
         # web-dev layout where a directory match typed into the wrong session.
@@ -588,34 +564,6 @@ class T5_CardActions(unittest.TestCase):
             self.assertNotIn(f"for pane {3 - n}", screen, f"pane {n} got the other session's prompt")
         for n in (1, 2):
             Rig.fire(self.c, "end", f"{TAG}-pane{n}", cwd=self.cwd, jobs=f"{CT_DIR}/jobs-pane{n}")
-
-    def test_open_terminal_attaches_inside_the_container(self):
-        code, r = api("/terminal", "POST", {"sid": self.sid})
-        self.assertEqual((code, r), (200, {"ok": True}))
-        self.assertTrue(wait_for(lambda: os.path.exists(Rig.term_log), 5))
-        with open(Rig.term_log) as f:
-            argv = f.read().split("\n")[:-1]
-        self.assertEqual(argv[0], "-e")
-        self.assertEqual(argv[2:], ["exec", self.c, "--env", "TERM=xterm-256color", "--", "tmux", "attach", "-t", TAG])
-        self.assertTrue(os.access(argv[1], os.X_OK), f"lxc at {argv[1]} under systemd")
-
-        # Run that command the way a terminal would, with your terminal's TERM
-        # (xterm-ghostty, which the containers have no terminfo for), under a
-        # pty and with no window: the client must attach.
-        cmd = " ".join("'" + a.replace("'", "'\\''") + "'" for a in argv[1:])
-        env = dict(os.environ, TERM=os.environ.get("TERM") or "xterm-ghostty")
-        p = subprocess.Popen(["script", "-qfec", cmd, "/dev/null"], env=env, stdin=subprocess.PIPE,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        try:
-            attached = wait_for(lambda: sh(self.c, f"tmux list-clients -t {TAG} -F x").strip(), 6)
-            self.assertTrue(attached, f"the terminal command did not attach with TERM={env['TERM']}")
-        finally:
-            sh(self.c, f"tmux detach-client -s {TAG} 2>/dev/null || true", check=False)
-            p.stdin.close()
-            try:
-                p.wait(5)
-            except subprocess.TimeoutExpired:
-                p.kill()
 
 
 class T6_Widget(unittest.TestCase):
