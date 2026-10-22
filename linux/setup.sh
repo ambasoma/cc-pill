@@ -553,7 +553,7 @@ mkdir -p "$DATA"
 VOICE=$(voice_dir "$INSTALL")
 
 # ---------- 2. hotkey ----------
-head_ "2 · Ask-mode hotkey" "Press it anywhere to start a Claude session from a prompt box."
+head_ "2 · Alfred hotkey" "Press it anywhere to ask Alfred about your sessions, or to pass a message to one."
 while true; do
   ui_input HOTKEY "Hotkey (modifiers+key, e.g. meta+alt+m, ctrl+shift+space)" "meta+alt+m"
   if KDEHOTKEY=$(python3 - "$HOTKEY" <<'PYEOF'
@@ -577,7 +577,7 @@ done
 ok "hotkey: $HOTKEY ($KDEHOTKEY)"
 
 # ---------- 3. pill sessions ----------
-head_ "3 · Pill-launched sessions" "How hands-free should hotkey-started sessions be?"
+head_ "3 · Sessions started through the API" "How hands-free should sessions started with POST /ask be?"
 M1="Auto-accept edits   · file edits proceed, other actions still ask (recommended)"
 M2="Fully hands-free    · skip ALL permission prompts (only for restorable machines)"
 M3="Normal              · every permission prompts, like your regular sessions"
