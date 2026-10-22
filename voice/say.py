@@ -6,6 +6,8 @@ recap button. Bypasses the mute flag on purpose, an explicit ask to speak
 should always speak.
 
     say.py --stop     cut whatever is being spoken right now, say nothing
+    say.py --sid <id> <text...>   tag the briefing with its session (the
+                                  card shows that row's stop button)
 """
 import sys
 
@@ -16,8 +18,12 @@ if __name__ == "__main__":
     if args and args[0] == "--stop":
         worker.stop_playback()
         sys.exit(0)
+    meta = None
+    if len(args) >= 2 and args[0] == "--sid":
+        meta = {"sid": args[1]}
+        args = args[2:]
     text = " ".join(args).strip()
     if text:
         # An explicit ask preempts whatever is currently playing.
         worker.stop_playback()
-        worker.speak(text, worker.load_config())
+        worker.speak(text, worker.load_config(), meta)

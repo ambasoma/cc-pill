@@ -24,6 +24,10 @@
       <label>How long the pointer must rest before the card opens, in milliseconds.</label>
       <default>400</default>
     </entry>
+    <entry name="pin" type="Bool">
+      <label>Keep the session card open when it loses focus (the card's pin button).</label>
+      <default>false</default>
+    </entry>
     <entry name="idleDot" type="Bool">
       <label>With no sessions, keep a faint dot so the widget can still be found and clicked.</label>
       <default>true</default>

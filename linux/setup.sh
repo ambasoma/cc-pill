@@ -2,6 +2,9 @@
 # cc-pill interactive setup for Linux, KDE Plasma 6.
 #   ./linux/setup.sh          full setup
 #   ./linux/setup.sh voice    add (or reconfigure) the voice later
+#   ./linux/setup.sh containers [name...]
+#                             wire Claude Code inside LXD containers to the pill
+#   ./linux/setup.sh update   bring the install up to date with this checkout
 set -euo pipefail
 
 # ---------- plain fallbacks (used until gum is installed, or without it) ----------
@@ -137,6 +140,9 @@ import json, os, sys
 install, voice_on, vdir = sys.argv[1], sys.argv[2] == "1", sys.argv[3]
 p = os.path.expanduser("~/.claude/settings.json")
 os.makedirs(os.path.dirname(p), exist_ok=True)
+if os.path.exists(p) and not os.path.exists(p + ".pre-cc-pill"):
+    import shutil
+    shutil.copy2(p, p + ".pre-cc-pill")   # the first time only: the untouched original
 cfg = {}
 try: cfg = json.load(open(p))
 except Exception: pass
@@ -144,17 +150,28 @@ hooks = cfg.setdefault("hooks", {})
 pill = install + "/hooks/hook.py"
 voice = vdir + "/hook.py"
 def cmd(script, mode): return {"type": "command", "command": f'python3 "{script}" {mode}', "timeout": 15}
-def entry(*cmds): return [{"hooks": list(cmds)}]
-hooks["SessionStart"] = entry(cmd(pill, "start"))
-hooks["UserPromptSubmit"] = entry(cmd(pill, "prompt"))
-hooks["PreToolUse"] = entry(cmd(pill, "tool"))
-hooks["SessionEnd"] = entry(cmd(pill, "end"))
-if voice_on:
-    hooks["Stop"] = entry(cmd(pill, "stop"), cmd(voice, "stop"))
-    hooks["Notification"] = entry(cmd(pill, "notify"), cmd(voice, "notify"))
-else:
-    hooks["Stop"] = entry(cmd(pill, "stop"))
-    hooks["Notification"] = entry(cmd(pill, "notify"))
+ours = {
+    "SessionStart": [cmd(pill, "start")],
+    "UserPromptSubmit": [cmd(pill, "prompt")],
+    "PreToolUse": [cmd(pill, "tool")],
+    "SessionEnd": [cmd(pill, "end")],
+    "Stop": [cmd(pill, "stop")] + ([cmd(voice, "stop")] if voice_on else []),
+    "Notification": [cmd(pill, "notify")] + ([cmd(voice, "notify")] if voice_on else []),
+}
+# Keep every hook that isn't ours; replace earlier copies of ours (a re-run,
+# or the voice switched on or off) instead of piling them up.
+def is_ours(h):
+    c = str(h.get("command", ""))
+    return c.endswith(tuple('/hooks/hook.py" ' + m for m in ("start", "prompt", "tool", "end", "stop", "notify"))) \
+        or c.endswith(('/voice/hook.py" stop', '/voice/hook.py" notify'))
+for event, cmds in ours.items():
+    groups = []
+    for g in hooks.get(event) or []:
+        inner = [h for h in g.get("hooks", []) if not is_ours(h)]
+        if inner:
+            groups.append(dict(g, hooks=inner))
+    groups.append({"hooks": cmds})
+    hooks[event] = groups
 json.dump(cfg, open(p, "w"), indent=2)
 PYEOF
 }
@@ -174,12 +191,18 @@ voice_dir() {  # voice_dir <install> -> the writable voice dir (venv, models, sp
 
 voice_runtime() {  # venv + models in <voice dir>
   cd "$1"
-  if [ ! -x .venv/bin/python ]; then
-    python3 -m venv .venv || die "python3 -m venv failed ($(pkg_hint python3-venv))"
-    ui_spin "Installing the speech engine..." .venv/bin/pip -q install kokoro-onnx soundfile
-    ok "venv ready"
-  else
+  # Check for the packages, not just the interpreter: a venv whose creation
+  # was cut short has bin/python but no pip and nothing installed. Running
+  # venv again over it fills in what is missing.
+  if .venv/bin/python -c "import kokoro_onnx, soundfile" 2>/dev/null; then
     ok "venv exists"
+  else
+    python3 -m venv .venv || die "python3 -m venv failed ($(pkg_hint python3-venv))"
+    ui_spin "Installing the speech engine..." .venv/bin/pip -q install kokoro-onnx soundfile \
+      || die "installing kokoro-onnx and soundfile failed; re-run: ./linux/setup.sh voice"
+    .venv/bin/python -c "import kokoro_onnx, soundfile" 2>/dev/null \
+      || die "the speech engine did not import after installing; re-run: ./linux/setup.sh voice"
+    ok "venv ready"
   fi
   mkdir -p models
   if [ ! -f models/kokoro-v1.0.onnx ]; then
@@ -218,16 +241,16 @@ voice_questions() {  # voice + name + personality + summarizer -> config + promp
     "af_nicole   · American, soft"
     "bf_emma     · British, gentle"
   )
-  VOICE="bm_george"
+  local VNAME="bm_george"   # the voice name; the caller keeps the voice dir in its own variable
   while true; do
     local choice
     ui_choose choice "Pick a voice to hear" "${OPTS[@]}"
-    VOICE="${choice%% *}"
-    ui_spin "$VOICE is warming up..." true
-    play_sample "$VOICE"
-    ui_confirm "Keep $VOICE?" "y" && break
+    VNAME="${choice%% *}"
+    ui_spin "$VNAME is warming up..." true
+    play_sample "$VNAME"
+    ui_confirm "Keep $VNAME?" "y" && break
   done
-  ok "voice: $VOICE"
+  ok "voice: $VNAME"
 
   head_ "Name your assistant" "Spoken persona and card footer."
   ui_input NAME "Assistant name" "Jarvis"
@@ -257,7 +280,7 @@ voice_questions() {  # voice + name + personality + summarizer -> config + promp
   if [ -z "$PERSONA" ]; then
     PERSONA="- Tone: playful and warm, with real wit. Think a cheeky best-friend-slash-butler who is genuinely good at their job: quick with a tease, delighted when things go well (\"the tests passed on the first try, I know, I'm shocked too\"), theatrically mournful about tedium (\"I renamed forty files, pray for me\")."
   fi
-  CCPILL_PERSONA="$PERSONA" python3 - "$install/voice" "$NAME" <<'PYEOF'
+  CCPILL_PERSONA="$PERSONA" python3 - "$vdir" "$NAME" <<'PYEOF'
 import sys, os
 d, name = sys.argv[1], sys.argv[2]
 persona = os.environ.get("CCPILL_PERSONA", "")
@@ -270,7 +293,7 @@ PYEOF
   ui_input SUMMODEL "Model for summarizing briefings" "haiku"
 
   cfg_set name "\"$NAME\""
-  cfg_set voice "\"$VOICE\""
+  cfg_set voice "\"$VNAME\""
   cfg_set speed "1.05"
   cfg_set volume "0.7"
   cfg_set summarizer_model "\"$SUMMODEL\""
@@ -285,6 +308,134 @@ PYEOF
     ok "shell alias: $LNAME (mute/unmute/replay/voice)"
   fi
 }
+
+lxd_containers() {  # running LXD containers with a Claude Code install, one per line
+  command -v lxc >/dev/null || return 0
+  local c
+  for c in $(lxc list --format csv -c n,s 2>/dev/null | awk -F, '$2=="RUNNING"{print $1}'); do
+    lxc exec "$c" -- sh -c 'test -d /root/.claude || ls -d /home/*/.claude >/dev/null 2>&1' 2>/dev/null && echo "$c"
+  done
+}
+
+wire_containers() {  # wire_containers <install> [name...]  (asks per container when none given)
+  local install="$1"; shift
+  local picked=("$@") c
+  if [ "${#picked[@]}" = 0 ]; then
+    for c in ${CONTAINERS-$(lxd_containers)}; do   # the list found already, if any
+      ui_confirm "Wire the Claude sessions in container $c?" "y" && picked+=("$c")
+    done
+  fi
+  if [ "${#picked[@]}" = 0 ]; then
+    warn "no containers wired"
+    return 0
+  fi
+  if python3 "$install/linux/bin/cc-pill-containers" add "${picked[@]}"; then
+    ok "containers wired: ${picked[*]}"
+  else
+    warn "could not wire every container; retry with: ./linux/setup.sh containers"
+  fi
+}
+
+# ================= update subcommand =================
+# Bring an install up to date with this checkout: copy the code over (never
+# deleting, never touching config, logs or the voice runtime), then upgrade
+# the widget, restart the daemon and re-push the container hook, each only
+# when its files changed.
+installed_at() {  # the install dir the running service uses
+  local unit="$HOME/.config/systemd/user/cc-pill.service" p
+  p=$(sed -n 's|^ExecStart=.* \(/.*\)/linux/daemon/ccpilld\.py.*|\1|p' "$unit" 2>/dev/null | head -1)
+  [ -n "$p" ] || p=$(python3 -c "import json,os;print(os.path.dirname(json.load(open(os.path.expanduser('$DATA/config.json'))).get('speaker','')))" 2>/dev/null || true)
+  echo "$p"
+}
+
+if [ "$MODE" = "update" ]; then
+  [ -f "$DATA/config.json" ] || die "run ./linux/setup.sh (full) first"
+  banner
+  if [ "$PACKAGED" = 1 ]; then
+    INSTALL="$REPO"
+  else
+    INSTALL=$(installed_at)
+    [ -n "$INSTALL" ] && [ -d "$INSTALL/linux" ] || die "can't find the install (no cc-pill.service); run ./linux/setup.sh"
+  fi
+  head_ "Updating cc-pill" "From $REPO to $INSTALL"
+  CHANGED=""
+  if [ "$INSTALL" != "$REPO" ]; then
+    command -v rsync >/dev/null || die "rsync is needed ($(pkg_hint rsync))"
+    # Code only: the install dir is also the data dir (config, events,
+    # state, logs) and holds the voice runtime; none of that is touched,
+    # and nothing there is ever deleted.
+    CHANGED=$(rsync -a --checksum --itemize-changes \
+      --exclude .git --exclude '__pycache__' --exclude 'app/.build' --exclude 'app/Pill.app' \
+      --exclude '/config.json' --exclude '/events' --exclude '/state.json' --exclude '/pill.log' \
+      --exclude 'voice/.venv' --exclude 'voice/models' --exclude 'voice/spool' \
+      --exclude 'voice/prompt.txt' --exclude 'voice/.off' \
+      "$REPO/" "$INSTALL/" | awk '$1 ~ /^>f/ {print $2}')
+    if [ -n "$CHANGED" ]; then
+      ok "copied $(echo "$CHANGED" | wc -l) changed file(s)"
+    else
+      ok "the install already matches this checkout"
+    fi
+  else
+    # Installed in place: everything in the checkout is live; act on all of it.
+    CHANGED=$(printf '%s\n' linux/plasmoid/ linux/daemon/ hooks/hook.py)
+    ok "installed in place: nothing to copy"
+  fi
+  changed() { echo "$CHANGED" | grep -q "^$1"; }
+
+  WIDGET_DONE=0
+  if changed linux/plasmoid/; then
+    if [ "$PACKAGED" = 1 ]; then
+      ok "widget: updated by your package manager"
+    elif kpackagetool6 --type Plasma/Applet --upgrade "$INSTALL/linux/plasmoid/com.ccpill.pill" >/dev/null 2>&1 \
+       || kpackagetool6 --type Plasma/Applet --install "$INSTALL/linux/plasmoid/com.ccpill.pill" >/dev/null 2>&1; then
+      ok "widget upgraded"
+      WIDGET_DONE=1
+    else
+      warn "widget upgrade failed: kpackagetool6 --type Plasma/Applet --upgrade $INSTALL/linux/plasmoid/com.ccpill.pill"
+    fi
+  fi
+
+  # The voice worker and the host hook start fresh for every event: only the
+  # daemon holds old code until restarted.
+  if changed linux/daemon/; then
+    if systemctl --user restart cc-pill.service; then ok "daemon restarted"; else warn "could not restart cc-pill.service"; fi
+  fi
+
+  if changed hooks/hook.py; then
+    WIRED=$(python3 -c "import json,os;print(' '.join(sorted(json.load(open(os.path.expanduser('$DATA/config.json'))).get('containers') or {})))" 2>/dev/null || true)
+    if [ -n "$WIRED" ]; then
+      # shellcheck disable=SC2086
+      if python3 "$INSTALL/linux/bin/cc-pill-containers" add $WIRED --no-restart; then
+        ok "hook re-pushed to: $WIRED"
+      else
+        warn "could not re-push the hook; retry: ./linux/setup.sh containers $WIRED"
+      fi
+    fi
+  fi
+
+  if [ "$WIDGET_DONE" = 1 ]; then
+    # Plasma loads widget code once: the new widget shows after a shell restart.
+    if ui_confirm "Restart plasmashell now to load the new widget? (the panel blinks for a couple of seconds)" "y"; then
+      systemctl --user restart plasma-plasmashell && ok "plasmashell restarted"
+    else
+      warn "the new widget loads at the next login, or: systemctl --user restart plasma-plasmashell"
+    fi
+  fi
+  echo
+  ok "${B}Up to date.${N}"
+  echo
+  exit 0
+fi
+
+# ================= containers subcommand =================
+if [ "$MODE" = "containers" ]; then
+  [ -f "$DATA/config.json" ] || die "run ./linux/setup.sh (full) first"
+  command -v lxc >/dev/null || die "the lxc client is not installed"
+  banner
+  head_ "LXD containers" "Claude Code sessions inside containers report to the pill over the LXD bridge."
+  wire_containers "$REPO" "${@:2}"
+  exit 0
+fi
 
 # ================= voice-later subcommand =================
 if [ "$MODE" = "voice" ]; then
@@ -462,7 +613,7 @@ head_ "Installing the daemon" "systemd user service: starts at login, auto-resta
 if [ "$PACKAGED" = 1 ]; then
   rm -f "$HOME/.config/systemd/user/cc-pill.service"   # the package ships /usr/lib/systemd/user/cc-pill.service
 else
-  chmod +x "$INSTALL/linux/daemon/ccpilld.py" "$INSTALL/linux/bin/ccpill-ask" "$INSTALL/linux/bin/cc-pill-place" "$INSTALL/voice/pillctl" 2>/dev/null || true
+  chmod +x "$INSTALL/linux/daemon/ccpilld.py" "$INSTALL/linux/bin/ccpill-ask" "$INSTALL/linux/bin/cc-pill-place" "$INSTALL/linux/bin/cc-pill-containers" "$INSTALL/voice/pillctl" 2>/dev/null || true
   mkdir -p "$HOME/.config/systemd/user"
   sed "s|__INSTALL__|$INSTALL|g" "$INSTALL/linux/systemd/cc-pill.service" > "$HOME/.config/systemd/user/cc-pill.service"
 fi
@@ -553,6 +704,13 @@ ok "hotkey registered (System Settings → Shortcuts → cc-pill: Ask, if it nee
 head_ "Registering Claude Code hooks" "Global; existing settings are preserved."
 if [ "$WANTVOICE" = "y" ]; then register_hooks "$INSTALL" 1 "$VOICE"; else register_hooks "$INSTALL" 0 "$VOICE"; fi
 ok "hooks in ~/.claude/settings.json"
+
+# ---------- LXD containers ----------
+CONTAINERS=$(lxd_containers)
+if [ -n "$CONTAINERS" ]; then
+  head_ "LXD containers" "Claude Code inside these containers can report to the pill over the LXD bridge. Later: ./linux/setup.sh containers"
+  wire_containers "$INSTALL"
+fi
 
 # ---------- optional tmux wrapper ----------
 head_ "Optional · tmux wrapper" "Lets the pill send prompts to and open your own interactive claude sessions."

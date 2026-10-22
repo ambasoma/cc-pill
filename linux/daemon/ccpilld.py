@@ -15,11 +15,14 @@ What it does, one for one with app/Sources/Pill/Model.swift:
   * runs the briefing bloom and the critter moments on the same timings
   * performs the card's actions: replay briefing, open terminal, send a
     prompt to a session, launch a hands-free session, mute, stop speech
+  * optionally takes events from Claude Code sessions inside LXD containers,
+    posted by the same hook over the LXD bridge (see "containers" below)
 
 Run it under a systemd user service (linux/setup.sh does this). Set
 CC_PILL_HOME to use a different data directory (tests do).
 """
 import errno
+import hmac
 import json
 import os
 import random
@@ -58,6 +61,11 @@ MOMENT_FALLBACK = 6.0
 MOMENT_DURATION = {"star": 2.4, "sad": 3.0}
 TOAST_SECONDS = 3.0
 REAP_INTERVAL = 10.0
+
+# Claude Code 2.x pre-starts "spare" processes for background sessions, in
+# /tmp/cc-daemon-<uid>/<id>/spare, and moves one to its project when it is
+# claimed. Nothing real runs there: an event from it is never a session.
+SPARE_CWD_RE = re.compile(r"/cc-daemon-[^/]+/[^/]+/spare(/|$)")
 
 SAD_RE = re.compile(r"fail(ed|ing)?|error|broke|broken|couldn.t|didn.t work|crash", re.I)
 
@@ -106,6 +114,12 @@ class Config:
         self.pill_gc_minutes = float(gc) if isinstance(gc, (int, float)) else 30.0
         port = data.get("daemon_port", DEFAULT_PORT)
         self.port = int(port) if isinstance(port, int) and 1024 <= port <= 65535 else DEFAULT_PORT
+        # LXD containers: the host's bridge address the containers post to,
+        # and one token per container ({"web-dev": "<token>"}).
+        self.bridge_host = data.get("bridge_host") or ""
+        ct = data.get("containers")
+        self.containers = {str(k): str(v) for k, v in ct.items() if v} if isinstance(ct, dict) else {}
+        self.lxc_bin = data.get("lxc_bin") or shutil.which("lxc") or "/snap/bin/lxc"
 
     @classmethod
     def load(cls, path=CONFIG_PATH):
@@ -131,9 +145,9 @@ def find_claude():
 def run(args, timeout=8):
     """Run a command, returning (stdout+stderr, exit code). Never raises.
 
-    Under systemd the PATH can be bare: add the usual user bin dirs. tmux
-    sanitizes control-char separators without a UTF-8 locale, so make sure
-    one is set.
+    Under systemd the PATH can be bare: add the usual user bin dirs. Set a
+    UTF-8 locale for tmux. Its -F output is split on tabs: tmux 3.5 escapes
+    other control characters (\x01 comes out as the text "\001").
     """
     env = dict(os.environ)
     extra = os.path.expanduser("~/.local/bin") + ":/usr/local/bin"
@@ -149,10 +163,12 @@ def run(args, timeout=8):
         return "", -1
 
 
-def spawn(args, cwd=None):
-    """Start a detached process (never waits, never raises)."""
+def spawn(args, cwd=None, env=None):
+    """Start a detached process (never waits, never raises). `env` adds to
+    this process's environment."""
     try:
-        subprocess.Popen(args, cwd=cwd, stdin=subprocess.DEVNULL,
+        subprocess.Popen(args, cwd=cwd, env=dict(os.environ, **env) if env else None,
+                         stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          start_new_session=True)
         return True
@@ -173,13 +189,71 @@ def pid_alive(pid):
         return e.errno != errno.ESRCH
 
 
+def container_host_pid(container, nspid, proc="/proc"):
+    """The host pid of process `nspid` inside LXD container `container`, or 0.
+
+    Container processes are visible on the host: their cgroup path names the
+    container (lxc.payload.<name>) and the last NSpid field is the pid as the
+    container sees it. Owned by a mapped uid, so kill(pid, 0) answers EPERM,
+    which pid_alive already counts as alive."""
+    marker = f"/lxc.payload.{container}/"
+    try:
+        names = os.listdir(proc)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"{proc}/{name}/status") as f:
+                ns = next((l.split()[1:] for l in f if l.startswith("NSpid:")), None)
+            if not ns or len(ns) < 2 or ns[-1] != str(nspid):
+                continue
+            with open(f"{proc}/{name}/cgroup") as f:
+                cg = f.read()
+        except (OSError, ValueError):
+            continue
+        if marker in cg or cg.rstrip().endswith(marker.rstrip("/")):
+            return int(name)
+    return 0
+
+
+def ancestor_pids(pid, proc="/proc", limit=40):
+    """`pid` and its ancestors, each as its own pid namespace sees it (the
+    last NSpid field): for a process in a container that is the pid its
+    tmux reports as pane_pid, on the host it is the plain pid."""
+    seen = set()
+    while pid > 1 and len(seen) < limit:
+        try:
+            with open(f"{proc}/{pid}/status") as f:
+                fields = dict(l.split(":", 1) for l in f if ":" in l)
+            seen.add(int(fields["NSpid"].split()[-1]))
+            pid = int(fields["PPid"].split()[0])
+        except (OSError, KeyError, ValueError, IndexError):
+            break
+    return seen
+
+
+def host_addresses(runner=None):
+    """Every address of this host (for telling an ssh from the host apart
+    from a genuinely remote one)."""
+    out, _ = (runner or run)(["ip", "-o", "addr", "show"])
+    addrs = set()
+    for line in out.splitlines():
+        parts = line.split()
+        for i, w in enumerate(parts[:-1]):
+            if w in ("inet", "inet6"):
+                addrs.add(parts[i + 1].split("/")[0])
+    return addrs
+
+
 # ------------------------------------------------------------------ model
 
 class Session:
     __slots__ = ("id", "repo", "cwd", "pid", "state", "since", "activity",
-                 "activity_at", "last_briefing", "remote")
+                 "activity_at", "last_briefing", "remote", "container")
 
-    def __init__(self, sid, repo, cwd, pid, state, since, remote=False):
+    def __init__(self, sid, repo, cwd, pid, state, since, remote=False, container=""):
         self.id = sid
         self.repo = repo
         self.cwd = cwd
@@ -190,13 +264,14 @@ class Session:
         self.activity_at = None
         self.last_briefing = None
         self.remote = remote
+        self.container = container  # LXD container name, "" on the host
 
     def to_json(self):
         return {
             "id": self.id, "repo": self.repo, "cwd": self.cwd, "pid": self.pid,
             "state": self.state, "since": self.since, "activity": self.activity,
             "activity_at": self.activity_at, "last_briefing": self.last_briefing,
-            "remote": self.remote,
+            "remote": self.remote, "container": self.container,
         }
 
 
@@ -213,7 +288,8 @@ class Store:
     """
 
     def __init__(self, config, clock=time.time, runner=run, spawner=spawn,
-                 alive=pid_alive, rng=random.random, sleeper=time.sleep):
+                 alive=pid_alive, rng=random.random, sleeper=time.sleep,
+                 host_pid=container_host_pid, local_addrs=None, ancestors=ancestor_pids):
         self.config = config
         self.clock = clock
         self.run = runner
@@ -221,6 +297,10 @@ class Store:
         self.alive = alive
         self.rng = rng
         self.sleep = sleeper
+        self.host_pid = host_pid
+        self.ancestors = ancestors
+        self._local_addrs = local_addrs   # lazily from `ip addr`
+        self._pid_cache = {}              # (container, container pid) -> host pid
         self.lock = threading.RLock()
 
         self.sessions = []
@@ -305,6 +385,70 @@ class Store:
         with self.lock:
             self._apply(evt)
 
+    def apply_container(self, container, evt):
+        """An event posted from inside an LXD container. Its pid is the
+        container's view: translate it to the host pid so reaping works.
+        An ssh from this host into the container is a local session, not a
+        remote one."""
+        if not isinstance(evt, dict) or not container:
+            return
+        evt = dict(evt)
+        evt["container"] = container
+        pid = evt.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            key = (container, pid)
+            hp = self._pid_cache.get(key)
+            if not hp or not self.alive(hp):
+                hp = self.host_pid(container, pid)
+                if hp:
+                    self._pid_cache[key] = hp
+            evt["pid"] = hp or 0
+        client = evt.pop("ssh_client", "") or ""
+        if client:
+            if self._local_addrs is None:
+                self._local_addrs = host_addresses(self.run)
+            evt["remote"] = client not in self._local_addrs
+        else:
+            evt["remote"] = False
+        speech = evt.pop("speech", None)
+        with self.lock:
+            self._apply(evt)
+        if evt.get("type") in ("stop", "notify") and not evt["remote"]:
+            self.brief_container(container, evt, speech if isinstance(speech, dict) else {})
+
+    def brief_container(self, container, evt, speech):
+        """Hand a container session's finished turn (or permission prompt) to
+        the voice worker on this host, the way voice/hook.py does for host
+        sessions: the container has no voice, no audio and no Claude login of
+        its own for the summary. Its hook sent the text along."""
+        if not self.voice_available() or self.voice_muted():
+            return False
+        job = {
+            "pill_mode": evt.get("type"), "container": container,
+            "session_id": evt.get("sid") or "", "cwd": evt.get("cwd") or "",
+            "last_assistant_message": str(speech.get("text") or "")[:8000],
+            "message": str(evt.get("msg") or "")[:2000],
+            "notification_type": str(speech.get("notification_type") or ""),
+        }
+        if job["pill_mode"] == "stop" and not job["last_assistant_message"].strip():
+            return False
+        spool = os.path.join(self.config.speaker, "spool")
+        try:
+            os.makedirs(spool, exist_ok=True)
+            path = os.path.join(spool, f"job-{time.time_ns()}.json")
+            with open(path, "w") as f:
+                json.dump(job, f)
+        except OSError as e:
+            log(f"ERROR: cannot queue briefing for {container}: {e}")
+            return False
+        worker = os.path.join(self.config.speaker, "worker.py")
+        voice_log = os.path.join(spool, "voice.log")
+        log(f"briefing queued: {container} {evt.get('repo') or '?'} ({job['pill_mode']})")
+        # sh only to append the worker's output to voice.log, like voice/hook.py
+        return self.spawn(["sh", "-c", 'exec "$0" "$@" >>"$CCPILL_VOICE_LOG" 2>&1',
+                           self.voice_python(), worker, path],
+                          env={"CCPILL_VOICE_LOG": voice_log})
+
     def _apply(self, evt):
         if not isinstance(evt, dict):
             return
@@ -316,17 +460,20 @@ class Store:
         pid = evt.get("pid") or 0
         pid = int(pid) if isinstance(pid, (int, float)) else 0
         remote = bool(evt.get("remote", False))
+        container = evt.get("container") or ""
+        if SPARE_CWD_RE.search(cwd):
+            return
 
         if typ == "start":
-            self._upsert(sid, repo, cwd, pid, remote, "done", now)
+            self._upsert(sid, repo, cwd, pid, remote, container, "done", now)
             log(f"session start: {repo} [{short(sid)}]")
         elif typ == "prompt":
-            self._upsert(sid, repo, cwd, pid, remote, "working", now)
+            self._upsert(sid, repo, cwd, pid, remote, container, "working", now)
             log(f"working: {repo} [{short(sid)}]")
         elif typ == "stop":
             s = self._find(sid)
             was_working = s is not None and s.state == "working"
-            self._upsert(sid, repo, cwd, pid, remote, "done", now)
+            self._upsert(sid, repo, cwd, pid, remote, container, "done", now)
             s = self._find(sid)
             if s is not None:
                 s.activity = None
@@ -353,7 +500,7 @@ class Store:
                     s.activity_at = now
                     log(f"activity: {repo}: {label}")
             else:
-                self._upsert(sid, repo, cwd, pid, remote, "working", now)
+                self._upsert(sid, repo, cwd, pid, remote, container, "working", now)
                 s = self._find(sid)
                 if s is not None:
                     s.activity = label
@@ -362,7 +509,7 @@ class Store:
             if evt.get("idle"):
                 log(f"idle nag ignored: {repo}")
             else:
-                self._upsert(sid, repo, cwd, pid, remote, "waiting", now)
+                self._upsert(sid, repo, cwd, pid, remote, container, "waiting", now)
                 log(f"waiting: {repo} [{short(sid)}]")
         elif typ == "end":
             self.sessions = [s for s in self.sessions if s.id != sid]
@@ -380,7 +527,7 @@ class Store:
             self._moment_fallback_at = None  # moment now plays after the bloom
             self.briefing = {
                 "text": text, "duration": duration, "silent": silent,
-                "started": now, "repo": repo, "sad": sad,
+                "started": now, "repo": repo, "sad": sad, "sid": sid,
             }
             s = self._find(sid) if sid else None
             if s is not None:
@@ -395,7 +542,7 @@ class Store:
                 return s
         return None
 
-    def _upsert(self, sid, repo, cwd, pid, remote, state, now):
+    def _upsert(self, sid, repo, cwd, pid, remote, container, state, now):
         if not sid:
             return
         # A real hook event supersedes an adopted placeholder for the same claude.
@@ -413,7 +560,7 @@ class Store:
                 s.cwd = cwd
                 s.repo = repo
         else:
-            self.sessions.append(Session(sid, repo, cwd, pid, state, now, remote))
+            self.sessions.append(Session(sid, repo, cwd, pid, state, now, remote, container))
 
     # --------------------------------------------------------------- moments
 
@@ -480,18 +627,48 @@ class Store:
         window = self.config.pill_gc_minutes * 60
         if window <= 0:
             return
-        stale = {s.pid for s in self.sessions if s.state == "done" and now - s.since > window}
+        stale = {s.pid for s in self.sessions
+                 if s.state == "done" and not s.container and now - s.since > window}
         if not stale:
             return
         out, _ = self.run(["tmux", "list-panes", "-a", "-F",
-                           "#{session_name}\x01#{session_attached}\x01#{pane_pid}"])
+                           "#{session_name}\t#{session_attached}\t#{pane_pid}"])
         for line in out.splitlines():
-            p = line.split("\x01")
+            p = line.split("\t")
             if len(p) != 3 or "-pill" not in p[0] or p[1] != "0" or not p[2].isdigit():
                 continue
             if int(p[2]) in stale:
                 self.run(["tmux", "kill-session", "-t", p[0]])
                 log(f"gc: killed idle pill session {p[0]}")
+
+    def restore(self, path=STATE_PATH):
+        """A restart (an update, a config change) must not forget the sessions
+        that are running: idle ones send no event until their next turn.
+        Take them back from the last published state while their claude
+        process lives."""
+        try:
+            with open(path) as f:
+                saved = json.load(f).get("sessions") or []
+        except (OSError, ValueError, AttributeError):
+            return 0
+        n = 0
+        with self.lock:
+            for d in saved:
+                if not isinstance(d, dict):
+                    continue
+                pid = d.get("pid")
+                sid = d.get("id") or ""
+                if not sid or not isinstance(pid, int) or pid <= 0 or not self.alive(pid) or self._find(sid):
+                    continue
+                state = d.get("state") if d.get("state") in ("working", "waiting", "done") else "done"
+                s = Session(sid, d.get("repo") or "?", d.get("cwd") or "", pid, state,
+                            float(d.get("since") or self.clock()), bool(d.get("remote")), d.get("container") or "")
+                s.last_briefing = d.get("last_briefing")
+                self.sessions.append(s)
+                n += 1
+        if n:
+            log(f"restored {n} running session(s)")
+        return n
 
     def adopt_existing(self):
         """Daemon restarts lose in-memory state, which would orphan running
@@ -499,11 +676,11 @@ class Store:
         for the same pid later replaces the placeholder."""
         with self.lock:
             out, code = self.run(["tmux", "list-panes", "-a", "-F",
-                                  "#{session_name}\x01#{pane_pid}\x01#{pane_current_path}\x01#{pane_current_command}"])
+                                  "#{session_name}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}"])
             log(f"adopt scan: code={code} lines={len(out.splitlines())}")
             now = self.clock()
             for line in out.splitlines():
-                p = line.split("\x01")
+                p = line.split("\t")
                 if len(p) != 4 or not p[0].startswith("cc-") or p[3] not in ("claude", "node") or not p[1].isdigit():
                     continue
                 pid = int(p[1])
@@ -594,20 +771,51 @@ class Store:
             return True
 
     def stop_speech(self):
+        # The bloom and the card's stop button end with the voice.
+        with self.lock:
+            self.briefing = None
+            self._briefing_clear_at = None
+            self._pending_moment = False
+            self._moment_fallback_at = None
         if self.voice_available():
             self.run([self.voice_python(), os.path.join(self.config.speaker, "say.py"), "--stop"], timeout=5)
         else:
             self.run(["pkill", "-f", "say-[0-9]+\\.wav"], timeout=5)
 
-    def tmux_pane(self, cwd):
-        """(pane_id, session_name) for a session's cwd, or None."""
-        out, code = self.run(["tmux", "list-panes", "-a", "-F",
-                              "#{pane_id}\x01#{session_name}\x01#{pane_current_path}"])
+    def in_container(self, container, args, interactive=False):
+        """`args` as a command line that runs where the session lives: as is
+        on the host, through `lxc exec` for a session in an LXD container.
+
+        lxc exec hands the container the host terminal's TERM, and a
+        container rarely has terminfo for newer terminals (xterm-ghostty,
+        xterm-kitty): interactive commands get a TERM every system knows."""
+        if not container:
+            return list(args)
+        env = ["--env", "TERM=xterm-256color"] if interactive else []
+        return [self.config.lxc_bin, "exec", container] + env + ["--"] + list(args)
+
+    def tmux(self, container, *args):
+        return self.run(self.in_container(container, ["tmux"] + list(args)))
+
+    def tmux_pane(self, cwd, container="", pid=0):
+        """(pane_id, session_name) of the pane a session runs in, or None.
+
+        By process first: the pane whose process is the session's claude or
+        one of its ancestors. A session's cwd moves when it cds into a
+        subdirectory, and two sessions can share one, so the directory is
+        only the fallback, for sessions with no known pid."""
+        out, code = self.tmux(container, "list-panes", "-a", "-F",
+                              "#{pane_id}\t#{session_name}\t#{pane_current_path}\t#{pane_pid}")
         if code != 0:
             return None
-        for line in out.splitlines():
-            p = line.split("\x01")
-            if len(p) == 3 and p[2] == cwd:
+        panes = [p for p in (line.split("\t") for line in out.splitlines()) if len(p) == 4]
+        if pid > 0:
+            mine = self.ancestors(pid)
+            for p in panes:
+                if p[3].isdigit() and int(p[3]) in mine:
+                    return p[0], p[1]
+        for p in panes:
+            if p[2] == cwd:
                 return p[0], p[1]
         return None
 
@@ -621,7 +829,7 @@ class Store:
         say = os.path.join(self.config.speaker, "say.py")
         if s.last_briefing:
             log(f"recap: {s.repo}: {s.last_briefing[:50]}")
-            return self.spawn([self.voice_python(), say, s.last_briefing])
+            return self.spawn([self.voice_python(), say, "--sid", s.id, s.last_briefing])
         # Fall back to the global last briefing from the voice log.
         _, code = self.run(["bash", os.path.join(self.config.speaker, "pillctl"), "last"])
         if code == 0:
@@ -659,18 +867,27 @@ class Store:
         s = self._find(sid)
         if s is None:
             return False
-        pane = self.tmux_pane(s.cwd)
+        ct = s.container
+        # A container path means nothing on the host: open the terminal in home.
+        cwd = (s.cwd or None) if not ct else None
+        pane = self.tmux_pane(s.cwd, ct, s.pid)
         if pane:
-            _, sess = pane
-            clients, _ = self.run(["tmux", "list-clients", "-F", "#{client_name}"])
+            pane_id, sess = pane
+            clients, _ = self.tmux(ct, "list-clients", "-F", "#{client_name}")
             names = [c for c in clients.splitlines() if c.strip()]
             if names:
-                self.run(["tmux", "switch-client", "-c", names[0], "-t", sess])
-                log(f"switched client {names[0]} to {sess}")
+                # The pane, not just its session: sessions often live as windows
+                # of one tmux session, and a pane target selects window and pane.
+                self.tmux(ct, "switch-client", "-c", names[0], "-t", pane_id)
+                log(f"switched client {names[0]} to {sess} {pane_id}" + (f" in {ct}" if ct else ""))
                 self._activate_terminal()
                 return True
             log(f"no attached tmux client; opening {self.config.terminal} on {sess}")
-            return self.spawn(self.terminal_command(["tmux", "attach", "-t", sess]), cwd=s.cwd or None)
+            return self.spawn(self.terminal_command(
+                self.in_container(ct, ["tmux", "attach", "-t", sess], interactive=True)), cwd=cwd)
+        if ct:
+            log(f"no tmux pane for {s.cwd} in {ct}; opening a shell there")
+            return self.spawn(self.terminal_command(self.in_container(ct, ["bash", "-l"], interactive=True)))
         log(f"no tmux pane for {s.cwd}; focusing the terminal")
         if not self._activate_terminal():
             return self.spawn(self.terminal_command([]), cwd=s.cwd or None)
@@ -698,13 +915,13 @@ class Store:
         t = (text or "").strip()
         if s is None or not t:
             return False
-        pane = self.tmux_pane(s.cwd)
+        pane = self.tmux_pane(s.cwd, s.container, s.pid)
         if not pane:
             self.flash(f"No tmux session for {s.repo}")
             log(f"sendPrompt FAILED, no pane for {s.cwd}")
             return False
-        _, a = self.run(["tmux", "send-keys", "-t", pane[0], "-l", t])
-        _, b = self.run(["tmux", "send-keys", "-t", pane[0], "Enter"])
+        _, a = self.tmux(s.container, "send-keys", "-t", pane[0], "-l", t)
+        _, b = self.tmux(s.container, "send-keys", "-t", pane[0], "Enter")
         ok = a == 0 and b == 0
         log(f"sendPrompt to {pane[0]} ({s.repo}) ok={ok}: {t[:60]}")
         if ok:
@@ -802,7 +1019,12 @@ def drain_events(store, directory=EVENTS_DIR):
 MAX_BODY = 64 * 1024
 
 
-def make_handler(store):
+TOKEN_HEADER = "X-CC-Pill-Token"
+
+
+def make_handler(store, bridge=False):
+    """The API handler. With bridge=True it is the listener on the LXD bridge:
+    it answers nothing but POST /event, and only with a container's token."""
     class Handler(BaseHTTPRequestHandler):
         server_version = "ccpilld/1.0"
         # HTTP/1.0: one request per connection, so a refused request whose
@@ -855,6 +1077,9 @@ def make_handler(store):
         def do_GET(self):
             if not self._guard():
                 return
+            if bridge:
+                self._send(404, {"error": "not found"})
+                return
             if self.path.split("?")[0] == "/state":
                 self._send(200, store.snapshot())
             else:
@@ -864,6 +1089,9 @@ def make_handler(store):
             if not self._guard():
                 return
             route = self.path.split("?")[0]
+            if bridge:
+                self._container_event(route)
+                return
             body = self._body()
             if body is None:
                 self._send(400, {"error": "bad body"})
@@ -892,15 +1120,59 @@ def make_handler(store):
                 return
             self._send(200, {"ok": bool(ok)})
 
+        def _container_event(self, route):
+            if route != "/event":
+                self._send(404, {"error": "not found"})
+                return
+            body = self._body()
+            if body is None:
+                self._send(400, {"error": "bad body"})
+                return
+            container = str(body.get("container") or "")
+            expected = store.config.containers.get(container)
+            token = self.headers.get(TOKEN_HEADER) or ""
+            if not expected or not hmac.compare_digest(token.encode(), expected.encode()):
+                self._send(403, {"error": "unknown container or bad token"})
+                return
+            store.apply_container(container, body.get("event"))
+            self._send(200, {"ok": True})
+
     return Handler
 
 
-def serve(store, port, host="127.0.0.1"):
-    httpd = ThreadingHTTPServer((host, port), make_handler(store))
+def serve(store, port, host="127.0.0.1", bridge=False):
+    httpd = ThreadingHTTPServer((host, port), make_handler(store, bridge))
     httpd.daemon_threads = True
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     return httpd
+
+
+def serve_bridge(store, config, attempts=30):
+    """The container listener on the LXD bridge address. The bridge may come
+    up after us at login, so keep trying for a while in the background."""
+    holder = {}
+
+    def bind():
+        for i in range(attempts):
+            try:
+                holder["httpd"] = serve(store, config.port, config.bridge_host, bridge=True)
+                log(f"listening for containers on {config.bridge_host}:{config.port} "
+                    f"({', '.join(sorted(config.containers))})")
+                return
+            except OSError as e:
+                if i == 0:
+                    log(f"bridge {config.bridge_host}:{config.port} not bindable yet: {e}")
+                time.sleep(2)
+        log(f"ERROR: gave up binding {config.bridge_host}:{config.port}")
+
+    threading.Thread(target=bind, daemon=True).start()
+
+    class Handle:
+        def shutdown(self):
+            if "httpd" in holder:
+                holder["httpd"].shutdown()
+    return Handle()
 
 
 # ------------------------------------------------------------------- main
@@ -921,6 +1193,10 @@ def main(argv=None):
         print(f"ccpilld: cannot bind 127.0.0.1:{config.port}: {e}", file=sys.stderr)
         return 1
     log(f"listening on 127.0.0.1:{config.port}")
+    store.restore()
+    bridge = None
+    if config.bridge_host and config.containers:
+        bridge = serve_bridge(store, config)
     store.adopt_existing()
     log(f"watching {EVENTS_DIR}")
 
@@ -939,6 +1215,8 @@ def main(argv=None):
         stop.wait(0.1)
 
     httpd.shutdown()
+    if bridge:
+        bridge.shutdown()
     log("ccpilld stopped")
     return 0
 

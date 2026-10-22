@@ -51,6 +51,10 @@ def load_config():
         "volume": 0.7,
         "summarizer_model": "haiku",
         "notify_throttle_seconds": 120,
+        # Silence between two briefings that would otherwise run together.
+        "briefing_gap_seconds": 2.5,
+        # Hard cap on a spoken briefing (a decision may run slightly over).
+        "briefing_max_words": 25,
     }
     try:
         with open(CONFIG) as f:
@@ -111,9 +115,55 @@ def last_spoke():
     return {"t": float(data.get("t", 0)), "sid": data.get("sid", ""), "repo": data.get("repo", "")}
 
 
-def summarize(raw, mode, model, ctx_repo=None):
+def spoken_name(container):
+    """How a container's name is said: "web-dev" -> "web dev"."""
+    return re.sub(r"[-_.]+", " ", container).strip()
+
+
+def trim_words(line, limit):
+    """Keep whole sentences within the word cap (with a little slack for a
+    decision); never less than the first sentence."""
+    if limit <= 0 or len(line.split()) <= limit + 5:
+        return line
+    sentences = re.split(r"(?<=[.!?])\s+", line.strip())
+    kept = [sentences[0]]
+    for s in sentences[1:]:
+        if len(" ".join(kept + [s]).split()) > limit + 5:
+            break
+        kept.append(s)
+    return " ".join(kept)
+
+
+def speakable_as_is(raw, max_words):
+    """Short plain English needs no summary: speak it and save the Haiku
+    call. Anything with code-ish characters still goes through Haiku, which
+    knows not to read paths and symbols aloud."""
+    text = " ".join(raw.split())
+    return (0 < len(text.split()) <= max(8, max_words)
+            and not re.search(r"[`/\\_{}<>#*|$=~\[\]]|\.\w{1,5}\b|\d{4,}", text))
+
+
+def clip(raw, limit=4000):
+    """The head and the tail of a long message: the outcome is usually at
+    the start, a question for the user at the end."""
+    if len(raw) <= limit:
+        return raw
+    return raw[:limit * 5 // 8] + "\n[...]\n" + raw[-(limit * 3 // 8):]
+
+
+def summarize(raw, mode, model, ctx_repo=None, max_words=0, container=""):
     with open(os.path.join(VOICE_DIR, "prompt.txt")) as f:
         prompt = f.read()
+    if max_words > 0:
+        prompt += (
+            f"\nHard limit: {max_words} words, one sentence, two at most. Only a "
+            "decision the user must make may run a little longer.\n"
+        )
+    if container:
+        prompt += (
+            "\nDo not name the container or machine: the user hears its name "
+            "just before your words.\n"
+        )
     if ctx_repo:
         prompt += (
             "\nIt has been a while since the user last heard a briefing, or the "
@@ -129,7 +179,7 @@ def summarize(raw, mode, model, ctx_repo=None):
             "the user (a permission request or idle prompt). Say briefly that "
             "their attention is needed and for what. One sentence is ideal.\n"
         )
-    prompt += "\n<<<MESSAGE>>>\n" + raw[:8000] + "\n<<<END>>>\n"
+    prompt += "\n<<<MESSAGE>>>\n" + clip(raw) + "\n<<<END>>>\n"
 
     env = dict(os.environ, PILL_INNER="1")
     try:
@@ -302,7 +352,7 @@ def terminal_in_front():
     return bool(cls) and (cls in TERMINAL_CLASSES or cls.split(".")[-1] in TERMINAL_CLASSES)
 
 
-def session_on_screen(cwd):
+def session_on_screen(cwd, container=""):
     """True when the user is already looking at this session's terminal.
 
     Precise when the session runs under tmux (the claude wrapper, or any
@@ -312,10 +362,12 @@ def session_on_screen(cwd):
     if not terminal_in_front():
         return False
     if cwd:
+        # A container session's panes live in the container's own tmux.
+        prefix = [shutil.which("lxc") or "lxc", "exec", container, "--"] if container else []
         try:
             out = subprocess.run(
-                ["tmux", "list-panes", "-a", "-F",
-                 "#{session_attached}\t#{window_active}\t#{pane_active}\t#{pane_current_path}"],
+                prefix + ["tmux", "list-panes", "-a", "-F",
+                          "#{session_attached}\t#{window_active}\t#{pane_active}\t#{pane_current_path}"],
                 capture_output=True, text=True, timeout=3,
             )
         except Exception:
@@ -373,6 +425,22 @@ def stop_playback():
         _run(["killall", "afplay"])
 
 
+def wait_for_gap(cfg, now=time.time, sleep=time.sleep):
+    """Hold until briefing_gap_seconds have passed since the last briefing
+    ended (last-spoke is stamped when playback finishes). Returns the wait."""
+    try:
+        gap = float(cfg.get("briefing_gap_seconds", 0) or 0)
+    except (TypeError, ValueError):
+        gap = 0.0
+    if gap <= 0:
+        return 0.0
+    wait = min(gap, last_spoke()["t"] + gap - now())
+    if wait > 0:
+        sleep(wait)
+        return wait
+    return 0.0
+
+
 def speak(text, cfg, meta=None, announce=True):
     import soundfile as sf
     from kokoro_onnx import Kokoro
@@ -413,6 +481,9 @@ def speak(text, cfg, meta=None, announce=True):
                 continue
             time.sleep(0.5)
             waited += 0.5
+    # Leave a breath after the previous briefing, so two that queue up behind
+    # each other don't run together.
+    wait_for_gap(cfg)
     # Duck: pause whatever the user is listening to, speak, then resume it.
     ducked = duck_begin()
     if ducked:
@@ -531,6 +602,7 @@ def main():
     # last one they heard was a different session, open with the project name.
     sid = payload.get("session_id", "")
     repo = os.path.basename((payload.get("cwd") or "").rstrip("/"))
+    container = payload.get("container") or ""
     ctx = None
     if mode == "stop" and repo:
         prev = last_spoke()
@@ -538,15 +610,26 @@ def main():
         switched = bool(prev["sid"]) and bool(sid) and prev["sid"] != sid
         if stale or switched:
             ctx = repo
-    line = summarize(raw, mode, cfg["summarizer_model"], ctx)
+    try:
+        max_words = int(cfg.get("briefing_max_words", 0) or 0)
+    except (TypeError, ValueError):
+        max_words = 0
+    if ctx is None and speakable_as_is(raw, max_words):
+        line = " ".join(raw.split())   # already a briefing: no Haiku call
+    else:
+        line = summarize(raw, mode, cfg["summarizer_model"], ctx, max_words, container)
     if not line or line.strip().upper() == "SKIP":
         print(f"[{time.strftime('%H:%M:%S')}] {mode}: (skipped)", flush=True)
         return
+    line = trim_words(line, max_words)
+    if container:
+        # Every container briefing opens with where it comes from.
+        line = f"{spoken_name(container)}: {line}"
     print(f"[{time.strftime('%H:%M:%S')}] {mode}: {line}", flush=True)
     # Courtesy: if the user is already looking at this session's terminal,
     # the briefing is redundant. Log it (for replay and the pill) but stay
     # quiet.
-    if session_on_screen(payload.get("cwd", "")):
+    if session_on_screen(payload.get("cwd", ""), container):
         print(f"[{time.strftime('%H:%M:%S')}] (terminal on screen, stayed quiet)", flush=True)
         # Silent bloom: the pill still shows the text, just without audio.
         pill_event({

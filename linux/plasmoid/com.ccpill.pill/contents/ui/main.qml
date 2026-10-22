@@ -110,7 +110,8 @@ PlasmoidItem {
                             : (pillState === "waiting" ? PlasmaCore.Types.NeedsAttentionStatus
                                                        : PlasmaCore.Types.ActiveStatus)
     preferredRepresentation: compactRepresentation
-    hideOnWindowDeactivate: true
+    // The card's pin button: a pinned card stays open when focus moves away
+    hideOnWindowDeactivate: !Plasmoid.configuration.pin
 
     // ---------------------------------------------------------------- peek
     // Hovering (when enabled) opens a peek: the card in a tooltip-type window
@@ -124,7 +125,7 @@ PlasmoidItem {
     property bool peekOpen: false
     readonly property bool showPeek: peekOpen && !expanded && compactRepresentationItem !== null
 
-    onExpandedChanged: if (expanded) peekOpen = false
+    onExpandedChanged: if (root.expanded) peekOpen = false
 
     Timer {
         interval: 600

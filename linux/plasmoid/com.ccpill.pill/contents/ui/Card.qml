@@ -1,8 +1,8 @@
 /*
  * The session card: full representation, shown as the Plasma popup when the
  * pill is clicked. One row per session with replay-briefing, speak-a-prompt
- * and open-terminal buttons, "+ NEW" to start a hands-free session, and the
- * voice's mute toggle in the footer.
+ * and open-terminal buttons, a pin to keep the card open, and the voice's
+ * mute toggle in the footer.
  */
 pragma ComponentBehavior: Bound
 
@@ -22,7 +22,6 @@ Item {
     readonly property bool online: ctl ? ctl.online : false
 
     property string inputFor: ""     // session id whose prompt field is open
-    property bool asking: false
 
     Layout.preferredWidth: Kirigami.Units.gridUnit * 21
     Layout.minimumWidth: Kirigami.Units.gridUnit * 18
@@ -45,7 +44,7 @@ Item {
         return "done · " + age
     }
 
-    onVisibleChanged: if (!visible) { inputFor = ""; asking = false }
+    onVisibleChanged: if (!visible) inputFor = ""
 
     ColumnLayout {
         id: column
@@ -63,36 +62,19 @@ Item {
                 opacity: 0.6
             }
             Item { Layout.fillWidth: true }
+            // Keep Open, like the pin on the clock's and the network's popups
             PlasmaComponents3.ToolButton {
-                visible: !card.peek
-                text: card.asking ? "cancel" : "+ NEW"
-                flat: true
-                enabled: card.online
-                font: Kirigami.Theme.smallFont
-                onClicked: {
-                    card.asking = !card.asking
-                    if (card.asking) { card.inputFor = ""; askField.forceActiveFocus() }
-                }
-                PlasmaComponents3.ToolTip.text: "Start a hands-free Claude session" + (card.pd && card.pd.hotkey ? " (" + card.pd.hotkey + ")" : "")
+                id: pinButton
+                visible: !card.peek && card.ctl !== null
+                checkable: true
+                checked: card.ctl ? card.ctl.cfg.pin : false
+                display: PlasmaComponents3.AbstractButton.IconOnly
+                icon.name: "window-pin"
+                text: "Keep Open"
+                onToggled: card.ctl.cfg.pin = checked
+                Accessible.name: text
+                PlasmaComponents3.ToolTip.text: text
                 PlasmaComponents3.ToolTip.visible: hovered
-            }
-        }
-
-        // ------------------------------------------------------ ask field
-        RowLayout {
-            Layout.fillWidth: true
-            visible: card.asking
-            PlasmaComponents3.TextField {
-                id: askField
-                Layout.fillWidth: true
-                placeholderText: "Ask " + (card.pd ? card.pd.voice.name : "Jarvis") + " for something…"
-                onAccepted: card.sendAsk()
-                Keys.onEscapePressed: card.asking = false
-            }
-            PlasmaComponents3.ToolButton {
-                icon.name: "document-send"
-                enabled: askField.text.trim().length > 0
-                onClicked: card.sendAsk()
             }
         }
 
@@ -144,8 +126,10 @@ Item {
                                 Layout.maximumWidth: Kirigami.Units.gridUnit * 10
                             }
                             PlasmaComponents3.Label {
-                                visible: row.modelData.remote
-                                text: "ssh"
+                                // the LXD container a session runs in, and/or ssh
+                                readonly property string where: row.modelData.container || ""
+                                visible: row.modelData.remote || where !== ""
+                                text: where !== "" ? (row.modelData.remote ? where + " · ssh" : where) : "ssh"
                                 font: Kirigami.Theme.smallFont
                                 opacity: 0.5
                             }
@@ -160,20 +144,21 @@ Item {
                     }
 
                     PlasmaComponents3.ToolButton {
-                        icon.name: "media-playback-start"
-                        enabled: !!row.modelData.last_briefing && !!card.pd && card.pd.voice.available
-                        onClicked: card.ctl.post("/recap", { sid: row.modelData.id })
-                        PlasmaComponents3.ToolTip.text: row.modelData.last_briefing ? "Play recap" : "No briefing yet"
+                        // play the last briefing; while this session is being spoken, stop
+                        readonly property bool speaking: !!card.pd && card.pd.pill.state === "speaking"
+                                                         && !!card.pd.briefing && !card.pd.briefing.silent
+                                                         && card.pd.briefing.sid === row.modelData.id
+                        icon.name: speaking ? "media-playback-stop" : "media-playback-start"
+                        enabled: speaking || (!!row.modelData.last_briefing && !!card.pd && card.pd.voice.available)
+                        onClicked: speaking ? card.ctl.post("/stop", {}) : card.ctl.post("/recap", { sid: row.modelData.id })
+                        PlasmaComponents3.ToolTip.text: speaking ? "Stop" : (row.modelData.last_briefing ? "Play recap" : "No briefing yet")
                         PlasmaComponents3.ToolTip.visible: hovered
                     }
                     PlasmaComponents3.ToolButton {
                         visible: !card.peek
                         icon.name: "mail-message-new"
                         checked: card.inputFor === row.modelData.id
-                        onClicked: {
-                            card.asking = false
-                            card.inputFor = card.inputFor === row.modelData.id ? "" : row.modelData.id
-                        }
+                        onClicked: card.inputFor = card.inputFor === row.modelData.id ? "" : row.modelData.id
                         PlasmaComponents3.ToolTip.text: "Send a prompt to this session"
                         PlasmaComponents3.ToolTip.visible: hovered
                     }
@@ -277,13 +262,5 @@ Item {
             Layout.fillWidth: true
             elide: Text.ElideRight
         }
-    }
-
-    function sendAsk() {
-        const t = askField.text.trim()
-        if (!t.length) return
-        card.ctl.post("/ask", { text: t })
-        askField.text = ""
-        card.asking = false
     }
 }

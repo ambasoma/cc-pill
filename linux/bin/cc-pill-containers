@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Wire Claude Code sessions inside LXD containers to the pill on this host.
+
+    cc-pill-containers add web-dev play-dev   # wire these containers
+    cc-pill-containers remove web-dev             # unwire one
+    cc-pill-containers status
+
+For each container this pushes the event hook to /root/.cc-pill/hook.py
+(or the home of --user), writes /root/.cc-pill/remote.json with the host's
+bridge address, the container's name and a token of its own, and merges the
+hook into that user's ~/.claude/settings.json, keeping every hook already
+there. On the host it records the bridge address and the tokens in
+~/.cc-pill/config.json and restarts the daemon, which then listens on the
+bridge for POST /event from exactly those containers.
+
+Stdlib only. Needs the `lxc` client and membership of the lxd group.
+"""
+import argparse
+import json
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))  # through the /usr/bin symlink too
+ROOT = os.path.dirname(os.path.dirname(HERE))        # the repo or /usr/share/cc-pill
+sys.path.insert(0, os.path.join(ROOT, "linux", "daemon"))
+import ccpilld  # noqa: E402  (no side effects at import)
+
+HOOK_SRC = os.path.join(ROOT, "hooks", "hook.py")
+DATA = ccpilld.HOME
+CONFIG = ccpilld.CONFIG_PATH
+LXC = ccpilld.Config.load().lxc_bin
+EVENTS = {
+    "SessionStart": "start", "UserPromptSubmit": "prompt", "PreToolUse": "tool",
+    "Stop": "stop", "Notification": "notify", "SessionEnd": "end",
+}
+MARK = "/.cc-pill/hook.py"   # how our entries are recognized on re-runs and removal
+
+
+def die(msg):
+    print(f"cc-pill-containers: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def lxc(*args, input=None, check=True):
+    p = subprocess.run([LXC, *args], input=input, capture_output=True, text=True)
+    if check and p.returncode != 0:
+        die(f"lxc {' '.join(args[:3])}: {(p.stderr or p.stdout).strip()}")
+    return p
+
+
+def sh(container, script, input=None, check=True):
+    return lxc("exec", container, "--", "sh", "-c", script, input=input, check=check)
+
+
+def load_config():
+    try:
+        with open(CONFIG) as f:
+            cfg = json.load(f)
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(cfg):
+    os.makedirs(DATA, exist_ok=True)
+    tmp = CONFIG + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, CONFIG)
+
+
+def bridge_address(container):
+    """The host's address on the network the container's default route uses."""
+    out = sh(container, "ip -4 route show default").stdout.split()
+    if "via" in out:
+        return out[out.index("via") + 1]
+    die(f"{container}: no default route to find the host by")
+
+
+def merge_hooks(settings, command_for):
+    """Add our hook to every event, after the hooks already there. Earlier
+    copies of ours (any install path) are replaced, never duplicated."""
+    settings = strip_hooks(settings)
+    hooks = settings.setdefault("hooks", {})
+    for event, mode in EVENTS.items():
+        groups = hooks.setdefault(event, [])
+        groups.append({"hooks": [{"type": "command", "command": command_for(mode), "timeout": 5}]})
+    return settings
+
+
+def strip_hooks(settings):
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return settings
+    for event in list(hooks):
+        groups = []
+        for g in hooks[event] if isinstance(hooks[event], list) else []:
+            inner = [h for h in g.get("hooks", []) if MARK not in str(h.get("command", ""))]
+            if inner:
+                groups.append(dict(g, hooks=inner))
+        if groups:
+            hooks[event] = groups
+        else:
+            del hooks[event]
+    return settings
+
+
+def home_of(container, user):
+    out = sh(container, f"getent passwd {user} | cut -d: -f6").stdout.strip()
+    if not out:
+        die(f"{container}: no user {user}")
+    return out
+
+
+def read_settings(container, path):
+    raw = sh(container, f"cat {path} 2>/dev/null || true").stdout
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        die(f"{container}: {path} is not valid JSON; fix it and re-run")
+    return data if isinstance(data, dict) else {}
+
+
+def write_settings(container, path, settings, user):
+    # Keep a backup the first time, then write through a temp file.
+    body = json.dumps(settings, indent=2) + "\n"
+    sh(container, f"""set -e
+d=$(dirname {path}); mkdir -p "$d"
+[ -e {path} ] && [ ! -e {path}.pre-cc-pill ] && cp -p {path} {path}.pre-cc-pill
+cat > {path}.cc-pill-tmp
+chown {user}: {path}.cc-pill-tmp
+mv {path}.cc-pill-tmp {path}""", input=body)
+
+
+def add(container, user, cfg, port, home=None):
+    if not os.path.exists(HOOK_SRC):
+        die(f"hook not found at {HOOK_SRC}")
+    if lxc("info", container, check=False).returncode != 0:
+        die(f"no container named {container}")
+    if sh(container, "command -v python3", check=False).returncode != 0:
+        die(f"{container}: python3 is needed inside the container for the hook")
+    home = home or home_of(container, user)
+    host = bridge_address(container)
+    cfg_host = cfg.get("bridge_host")
+    if cfg_host and cfg_host != host:
+        die(f"{container} reaches the host at {host}, others at {cfg_host}; one bridge only")
+    cfg["bridge_host"] = host
+    tokens = cfg.setdefault("containers", {})
+    token = tokens.get(container) or secrets.token_urlsafe(24)
+    tokens[container] = token
+
+    with open(HOOK_SRC) as f:
+        hook = f.read()
+    remote = {"url": f"http://{host}:{port}", "container": container, "token": token}
+    sh(container, f"""set -e
+mkdir -p {home}/.cc-pill
+cat > {home}/.cc-pill/hook.py
+chmod 755 {home}/.cc-pill/hook.py
+chown -R {user}: {home}/.cc-pill""", input=hook)
+    sh(container, f"""set -e
+umask 077
+cat > {home}/.cc-pill/remote.json
+chown {user}: {home}/.cc-pill/remote.json""", input=json.dumps(remote, indent=2) + "\n")
+
+    path = f"{home}/.claude/settings.json"
+    settings = merge_hooks(read_settings(container, path),
+                           lambda mode: f'python3 "{home}{MARK}" {mode}')
+    write_settings(container, path, settings, user)
+    print(f"  {container}: hook in {home}/.cc-pill, events to {host}:{port}")
+
+
+def remove(container, user, cfg, home=None):
+    tokens = cfg.get("containers") or {}
+    tokens.pop(container, None)
+    if not tokens:
+        cfg.pop("containers", None)
+        cfg.pop("bridge_host", None)
+    if lxc("info", container, check=False).returncode != 0:
+        print(f"  {container}: gone; dropped from the config")
+        return
+    home = home or home_of(container, user)
+    path = f"{home}/.claude/settings.json"
+    write_settings(container, path, strip_hooks(read_settings(container, path)), user)
+    sh(container, f"rm -rf {home}/.cc-pill")
+    print(f"  {container}: unwired")
+
+
+def restart_daemon():
+    if shutil.which("systemctl") and subprocess.run(
+            ["systemctl", "--user", "is-enabled", "--quiet", "cc-pill.service"]).returncode == 0:
+        subprocess.run(["systemctl", "--user", "restart", "cc-pill.service"])
+        print("  daemon restarted")
+    else:
+        print("  (no cc-pill.service yet: the daemon picks this up when it starts)")
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("action", choices=("add", "remove", "status"))
+    ap.add_argument("containers", nargs="*")
+    ap.add_argument("--user", default="root", help="the user Claude Code runs as inside (default root)")
+    ap.add_argument("--home", help="wire this directory instead of the user's home (tests)")
+    ap.add_argument("--no-restart", action="store_true")
+    a = ap.parse_args(argv)
+    cfg = load_config()
+    port = ccpilld.Config(cfg).port
+
+    if a.action == "status":
+        print(f"bridge: {cfg.get('bridge_host') or '(none)'}:{port}")
+        for c in sorted(cfg.get("containers") or {}):
+            wired = sh(c, f"test -e ~{a.user}/.cc-pill/remote.json", check=False).returncode == 0
+            print(f"  {c}: {'wired' if wired else 'in the config, but not wired inside'}")
+        return 0
+    if not a.containers:
+        die("name at least one container")
+    for c in a.containers:
+        if a.action == "add":
+            add(c, a.user, cfg, port, a.home)
+        else:
+            remove(c, a.user, cfg, a.home)
+    save_config(cfg)
+    if not a.no_restart:
+        restart_daemon()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

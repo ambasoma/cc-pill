@@ -54,9 +54,11 @@ class FakeRunner:
 class FakeSpawner:
     def __init__(self):
         self.calls = []
+        self.envs = []
 
-    def __call__(self, args, cwd=None):
+    def __call__(self, args, cwd=None, env=None):
         self.calls.append((list(args), cwd))
+        self.envs.append(env)
         return True
 
 
@@ -85,7 +87,9 @@ class Base(unittest.TestCase):
                                       "home_repo": os.path.join(self.tmp, "work"), "claude_bin": "/x/claude"})
         self.store = ccpilld.Store(self.config, clock=self.clock, runner=self.runner,
                                    spawner=self.spawner, alive=lambda pid: pid not in self.dead,
-                                   rng=lambda: 0.1, sleeper=lambda s: None)
+                                   rng=lambda: 0.1, sleeper=lambda s: None,
+                                   ancestors=lambda pid: self.tree.get(pid, set()))
+        self.tree = {}   # fake process tree: pid -> {pid and its ancestors}
 
     def tearDown(self):
         ccpilld.LOG_PATH, ccpilld.STATE_PATH, ccpilld.EVENTS_DIR = self._orig
@@ -388,7 +392,7 @@ class ReapAndGcTest(Base):
 
     def test_gc_kills_only_idle_detached_pill_sessions(self):
         self.runner.rules.append((("tmux", "list-panes"), (
-            "cc-work-pill\x010\x01100\ncc-work-pill-2\x011\x01200\ncc-work\x010\x01300\n", 0)))
+            "cc-work-pill\t0\t100\ncc-work-pill-2\t1\t200\ncc-work\t0\t300\n", 0)))
         for pid in (100, 200, 300):
             self.store.apply(evt("stop", sid=f"s{pid}", pid=pid))
         self.clock.advance(self.config.pill_gc_minutes * 60 + ccpilld.REAP_INTERVAL + 1)
@@ -405,10 +409,10 @@ class ReapAndGcTest(Base):
 
     def test_adopt_existing(self):
         self.runner.rules.append((("tmux", "list-panes"), (
-            "cc-demo\x01900\x01/home/u/demo\x01claude\n"
-            "cc-other\x01901\x01/home/u/other\x01node\n"
-            "main\x01902\x01/home/u\x01claude\n"
-            "cc-shell\x01903\x01/home/u/shell\x01zsh\n", 0)))
+            "cc-demo\t900\t/home/u/demo\tclaude\n"
+            "cc-other\t901\t/home/u/other\tnode\n"
+            "main\t902\t/home/u\tclaude\n"
+            "cc-shell\t903\t/home/u/shell\tzsh\n", 0)))
         self.store.sessions.append(ccpilld.Session("s-known", "other", "/home/u/other", 901, "working", 0))
         self.store.adopt_existing()
         ids = sorted(s.id for s in self.store.sessions)
@@ -493,7 +497,7 @@ class ConfigTest(unittest.TestCase):
 
 
 class ActionsTest(Base):
-    PANES = "%3\x01cc-demo\x01/home/u/demo\n%4\x01main\x01/home/u\n"
+    PANES = "%3\tcc-demo\t/home/u/demo\t700\n%4\tmain\t/home/u\t701\n"
 
     def test_terminal_command_table(self):
         tail = ["tmux", "attach", "-t", "x"]
@@ -531,7 +535,7 @@ class ActionsTest(Base):
         self.store.apply(evt("start"))
         self.assertTrue(self.store.open_terminal("s1"))
         self.assertEqual(self.runner.called("tmux", "switch-client"),
-                         [["tmux", "switch-client", "-c", "/dev/pts/2", "-t", "cc-demo"]])
+                         [["tmux", "switch-client", "-c", "/dev/pts/2", "-t", "%3"]])
         self.assertEqual(self.spawner.calls, [])
 
     def test_open_terminal_spawns_when_no_client(self):
@@ -550,7 +554,7 @@ class ActionsTest(Base):
         self.store.apply(evt("briefing", text="Shipped it.", duration=1))
         self.assertTrue(self.store.recap("s1"))
         args, _ = self.spawner.calls[0]
-        self.assertEqual(args[1:], [os.path.join(self.speaker, "say.py"), "Shipped it."])
+        self.assertEqual(args[1:], [os.path.join(self.speaker, "say.py"), "--sid", "s1", "Shipped it."])
 
     def test_mute_toggle(self):
         self.enable_voice()

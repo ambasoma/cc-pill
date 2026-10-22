@@ -49,8 +49,8 @@ Item {
     readonly property real maxW: 430
 
     // No sessions: either gone entirely (the Mac way) or parked as a faint
-    // dot, so the widget can still be found, hovered and clicked for "+ NEW"
-    // and so an offline daemon is discoverable through the tooltip.
+    // dot, so the widget can still be found, hovered and clicked, and so an
+    // offline daemon is discoverable through the tooltip.
     readonly property bool parked: st === "hidden" && ctl && ctl.idleDot
 
     readonly property real targetW: {
