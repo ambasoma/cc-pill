@@ -17,6 +17,7 @@ What it does, one for one with app/Sources/Pill/Model.swift:
     session, launch a hands-free session, mute, stop speech
   * optionally takes events from Claude Code sessions inside LXD containers,
     posted by the same hook over the LXD bridge (see "containers" below)
+  * runs Alfred, the assistant behind the hotkey (alfred.py)
 
 Run it under a systemd user service (linux/setup.sh does this). Set
 CC_PILL_HOME to use a different data directory (tests do).
@@ -112,6 +113,23 @@ class Config:
         ct = data.get("containers")
         self.containers = {str(k): str(v) for k, v in ct.items() if v} if isinstance(ct, dict) else {}
         self.lxc_bin = data.get("lxc_bin") or shutil.which("lxc") or "/snap/bin/lxc"
+        # Alfred: the local model server, Whisper and the recorder; each one
+        # defaults to what ~/.local/opt/local-ai holds, when it is there.
+        def found(key, path):
+            v = data.get(key)
+            if isinstance(v, str):
+                return os.path.expanduser(v)
+            return path if os.path.exists(path) else ""
+        ai = os.path.expanduser("~/.local/opt/local-ai")
+        self.alfred_llm_url = data.get("alfred_llm_url") or "http://127.0.0.1:8099"
+        self.alfred_llm_cmd = found("alfred_llm_cmd", os.path.join(ai, "bin", "llm-server"))
+        self.alfred_whisper_cli = found("alfred_whisper_cli",
+                                        os.path.join(ai, "whisper.cpp", "whisper-bin-ubuntu-x64", "whisper-cli"))
+        self.alfred_whisper_model = found("alfred_whisper_model", os.path.join(ai, "models", "ggml-base.en.bin"))
+        self.alfred_recorder = data.get("alfred_recorder") or shutil.which("pw-record") or shutil.which("arecord") or ""
+        self.alfred_fallback_model = data.get("alfred_fallback_model") or "haiku"
+        idle = data.get("alfred_llm_idle_minutes", 15)
+        self.alfred_llm_idle = float(idle) * 60 if isinstance(idle, (int, float)) else 900.0
         # The uid Claude Code runs as inside a container, when it isn't root
         # (cc-pill-containers add --user): tmux runs as that user.
         cu = data.get("container_users")
@@ -164,8 +182,9 @@ def clean_event(evt):
     return out
 
 
-def run(args, timeout=8):
+def run(args, timeout=8, input=None, cwd=None, stderr=True):
     """Run a command, returning (stdout+stderr, exit code). Never raises.
+    stderr=False leaves out the command's log lines (Whisper, claude -p).
 
     Under systemd the PATH can be bare: add the usual user bin dirs. Set a
     UTF-8 locale for tmux. Its -F output is split on tabs: tmux 3.5 escapes
@@ -175,8 +194,9 @@ def run(args, timeout=8):
     if not env.get("LANG"):
         env["LANG"] = "C.UTF-8"
     try:
-        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env)
-        return p.stdout + p.stderr, p.returncode
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout, env=env,
+                           input=input, cwd=cwd)
+        return (p.stdout + p.stderr if stderr else p.stdout), p.returncode
     except subprocess.TimeoutExpired as e:
         return (e.stdout or "") if isinstance(e.stdout, str) else "", -1
     except (OSError, ValueError):
@@ -347,6 +367,7 @@ class Store:
 
         self.version = 0
         self._last_signature = None
+        self.alfred = None      # set by main(): the assistant
 
     # ------------------------------------------------------------ pill state
 
@@ -780,6 +801,7 @@ class Store:
                 },
                 "toast": self.toast,
                 "hotkey": self.config.hotkey,
+                "alfred": self.alfred.snapshot() if self.alfred else None,
             }
 
     def publish_if_changed(self, path=STATE_PATH):
@@ -830,6 +852,16 @@ class Store:
             self.stop_speech()
             log("voice muted")
             return True
+
+    def speak(self, text):
+        """Say `text` in the voice now, ahead of anything waiting (an answer
+        to something the user asked)."""
+        if text and self.voice_available():
+            return self.spawn([self.voice_python(), os.path.join(self.config.speaker, "say.py"), text])
+        return False
+
+    def log_line(self, msg):
+        log(msg)
 
     def stop_speech(self):
         # The bloom and the card's stop button end with the voice.
@@ -1101,7 +1133,26 @@ def make_handler(store, bridge=False):
             sid = str(body.get("sid") or "")
             text = body.get("text")
             text = text if isinstance(text, str) else ""
-            if route == "/ask":
+            if route.startswith("/alfred/"):
+                a = store.alfred
+                if a is None:
+                    self._send(404, {"error": "not found"})
+                    return
+                pid = str(body.get("id") or "")
+                if route == "/alfred/summon":
+                    ok = a.summon()
+                elif route == "/alfred/ask":
+                    ok = a.ask(text)
+                elif route == "/alfred/listen":
+                    ok = a.listen(body.get("on") is True)
+                elif route == "/alfred/confirm":
+                    ok = a.confirm(pid)
+                elif route == "/alfred/cancel":
+                    ok = a.cancel(pid)
+                else:
+                    self._send(404, {"error": "not found"})
+                    return
+            elif route == "/ask":
                 ok = store.launch_session(text, wait=False)
             elif route == "/recap":
                 ok = store.recap(sid)
@@ -1188,6 +1239,11 @@ def main(argv=None):
     os.makedirs(EVENTS_DIR, exist_ok=True)
     config = Config.load()
     store = Store(config)
+    import alfred as alfred_mod
+    store.alfred = alfred_mod.Alfred(store, config, router=alfred_mod.Router(
+        config.alfred_llm_url, config.alfred_llm_cmd, config.claude_bin, config.alfred_fallback_model,
+        idle=config.alfred_llm_idle, run=run, log_path=os.path.join(HOME, "alfred", "llm.log"), log=log),
+        data_dir=os.path.join(HOME, "alfred"))
     log(f"ccpilld starting (pid {os.getpid()}, data {HOME})")
     try:
         httpd = serve(store, config.port)
@@ -1214,9 +1270,13 @@ def main(argv=None):
     while not stop.is_set():
         drain_events(store)
         store.tick()
+        store.alfred.tick()
         store.publish_if_changed()
         stop.wait(0.1)
 
+    if store.alfred.router:
+        store.alfred.router.idle = -1
+        store.alfred.router.tick()      # stop the model server we started
     httpd.shutdown()
     if bridge:
         bridge.shutdown()

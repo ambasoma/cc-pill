@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=cc-pill: Ask
-Comment=Start a hands-free Claude Code session from a prompt
+Name=cc-pill: Ask Alfred
+Comment=Open the cc-pill card to ask Alfred, the assistant for your Claude Code sessions
 Exec=__INSTALL__/linux/bin/ccpill-ask
-Icon=utilities-terminal
+Icon=dialog-messages
 Terminal=false
 NoDisplay=true
 StartupNotify=false

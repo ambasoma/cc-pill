@@ -2,7 +2,8 @@
  * The session card: full representation, shown as the Plasma popup when the
  * pill is clicked. One row per session: its state, what it is doing, its
  * last briefing, and replay and send-a-prompt buttons. A pin
- * keeps the card open; the footer holds the voice and its mute toggle.
+ * keeps the card open. Under the sessions: Alfred, the assistant (type, or
+ * hold Space to talk). The footer holds the voice and its mute toggle.
  */
 pragma ComponentBehavior: Bound
 
@@ -326,6 +327,127 @@ Item {
                         }
                     }
                 }
+            }
+        }
+
+        // --------------------------------------------------------- Alfred
+        ColumnLayout {
+            id: alfredBox
+            readonly property var a: card.pd ? card.pd.alfred : null
+            visible: card.online && !card.peek && a !== null
+            Layout.fillWidth: true
+            Layout.topMargin: card.gap
+            spacing: card.gap
+
+            // the last exchange: what you asked, what he said
+            ColumnLayout {
+                visible: !!alfredBox.a && (alfredBox.a.you !== "" || alfredBox.a.reply !== ""
+                                           || alfredBox.a.busy || alfredBox.a.listening)
+                Layout.fillWidth: true
+                Layout.leftMargin: card.gap
+                spacing: 2
+                PlasmaComponents3.Label {
+                    visible: !!alfredBox.a && alfredBox.a.you !== "" && !alfredBox.a.listening
+                    text: alfredBox.a ? "\u201c" + alfredBox.a.you + "\u201d" : ""
+                    font: Kirigami.Theme.smallFont
+                    opacity: 0.55
+                    wrapMode: Text.WordWrap
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: card.gap
+                    PlasmaComponents3.BusyIndicator {
+                        visible: !!alfredBox.a && (alfredBox.a.busy || alfredBox.a.listening)
+                        running: visible
+                        Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                        Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                    }
+                    PlasmaComponents3.Label {
+                        text: !alfredBox.a ? "" : alfredBox.a.listening ? "Listening\u2026"
+                              : alfredBox.a.busy ? "Thinking\u2026" : alfredBox.a.reply
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                    }
+                }
+                // a send waits for your yes
+                RowLayout {
+                    visible: !!alfredBox.a && !!alfredBox.a.pending && !alfredBox.a.busy
+                    spacing: card.gap
+                    PlasmaComponents3.Button {
+                        icon.name: "document-send-symbolic"
+                        text: "Send"
+                        onClicked: card.ctl.post("/alfred/confirm", { id: alfredBox.a.pending.id })
+                    }
+                    PlasmaComponents3.Button {
+                        text: "Cancel"
+                        onClicked: card.ctl.post("/alfred/cancel", { id: alfredBox.a.pending.id })
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                PlasmaComponents3.TextField {
+                    id: askField
+                    Layout.fillWidth: true
+                    readonly property bool canListen: !!alfredBox.a && alfredBox.a.can_listen
+                    placeholderText: alfredBox.a && alfredBox.a.listening ? "Listening\u2026 let go of Space to send"
+                                     : canListen ? "Ask " + (card.pd ? card.pd.voice.name : "Alfred") + ", or hold Space to talk"
+                                     : "Ask " + (card.pd ? card.pd.voice.name : "Alfred") + "\u2026"
+                    onAccepted: {
+                        const t = text.trim()
+                        if (!t.length) return
+                        card.ctl.post("/alfred/ask", { text: t })
+                        text = ""
+                    }
+                    Keys.onEscapePressed: text = ""
+                    // Hold Space in the empty box to talk: a tap does nothing,
+                    // a hold records until you let go.
+                    Keys.onPressed: event => {
+                        if (event.key !== Qt.Key_Space || text.length > 0 || !canListen) return
+                        event.accepted = true
+                        if (!event.isAutoRepeat && !holdToTalk.running && !(alfredBox.a && alfredBox.a.listening))
+                            holdToTalk.start()
+                    }
+                    Keys.onReleased: event => {
+                        if (event.key !== Qt.Key_Space || event.isAutoRepeat || text.length > 0) return
+                        event.accepted = true
+                        if (holdToTalk.running) holdToTalk.stop()
+                        else if (alfredBox.a && alfredBox.a.listening) card.ctl.post("/alfred/listen", { on: false })
+                    }
+                    Timer {
+                        id: holdToTalk
+                        interval: 250
+                        onTriggered: card.ctl.post("/alfred/listen", { on: true })
+                    }
+                }
+                PlasmaComponents3.ToolButton {
+                    visible: askField.canListen
+                    display: PlasmaComponents3.AbstractButton.IconOnly
+                    icon.name: "audio-input-microphone-symbolic"
+                    text: "Hold to talk"
+                    checked: !!alfredBox.a && alfredBox.a.listening
+                    onPressed: card.ctl.post("/alfred/listen", { on: true })
+                    onReleased: card.ctl.post("/alfred/listen", { on: false })
+                    Accessible.name: text
+                    PlasmaComponents3.ToolTip.text: text
+                    PlasmaComponents3.ToolTip.visible: hovered
+                }
+            }
+
+            Connections {
+                target: card.ctl
+                function onSummoned() { focusLater.restart() }
+            }
+            Timer {
+                // the popup has to be open before the box can take the keyboard
+                id: focusLater
+                interval: 150
+                onTriggered: askField.forceActiveFocus()
             }
         }
 

@@ -48,8 +48,24 @@ PlasmoidItem {
             moment: null,
             voice: { name: "Jarvis", muted: false, available: false },
             toast: null,
-            hotkey: ""
+            hotkey: "",
+            alfred: null
         }
+    }
+
+    // ---------------------------------------------------------------- Alfred
+    // The hotkey asks the daemon to summon Alfred; the daemon counts summons
+    // and this widget, seeing the count go up, opens the card on his box.
+    signal summoned()
+    property int lastSummon: -1
+    onPillDataChanged: {
+        const a = pillData.alfred
+        if (!a) return
+        if (lastSummon >= 0 && a.summon > lastSummon) {
+            root.expanded = true
+            root.summoned()
+        }
+        lastSummon = a.summon
     }
 
     readonly property string pillState: online ? pillData.pill.state : "hidden"

@@ -197,9 +197,19 @@ class Rig:
             # like the real worker, it takes the job out of the spool
             f.write(f'#!/bin/sh\n# $1 = worker.py, $2 = the job\nmv "$2" "{cls.voice_jobs}/"\necho "$1" > "{cls.voice_jobs}/.worker"\n')
         os.chmod(fake_py, 0o755)
+        # Alfred hears a recorded clip instead of the microphone: a stand-in
+        # "pw-record" copies the clip to the file it is told to write.
+        cls.clip = os.path.join(cls.scratch, "clip.wav")
+        bindir = os.path.join(cls.scratch, "bin")
+        os.makedirs(bindir)
+        fake_rec = os.path.join(bindir, "pw-record")
+        with open(fake_rec, "w") as f:
+            f.write(f'#!/bin/sh\nfor a; do out="$a"; done\ncp "{cls.clip}" "$out"\n'
+                    'trap "exit 0" INT TERM\nwhile :; do sleep 0.2; done\n')
+        os.chmod(fake_rec, 0o755)
         with open(os.path.join(data, "config.json"), "w") as f:
-            json.dump({"daemon_port": PORT, "name": "Itest",
-                       "speaker": cls.voice}, f)
+            json.dump({"daemon_port": PORT, "name": "Itest", "speaker": cls.voice,
+                       "alfred_recorder": fake_rec}, f)
         cls.data = data
 
         # Wire a scratch home in every container, into the scratch config.
@@ -689,13 +699,114 @@ class T7_RealSessions(unittest.TestCase):
                 self.assertRegex(target, r"(^|/)claude( |$)", f"walk landed on: {target}")
 
 
+def alfred_state():
+    code, st = api("/state")
+    return (st or {}).get("alfred") or {}
+
+
+def alfred_says(after, timeout=60):
+    """Wait for Alfred to finish a request and return his reply."""
+    def done():
+        a = alfred_state()
+        return a if a and not a.get("busy") and not a.get("listening") and a.get("reply") != after else None
+    a = wait_for(done, timeout, 0.3)
+    return (a or {}).get("reply", "")
+
+
+def llm_servers():
+    out = subprocess.run(["ps", "-eo", "comm"], capture_output=True, text=True).stdout.split()
+    return out.count("llama-server")
+
+
+class T8_Alfred(unittest.TestCase):
+    """Alfred through the real daemon: briefing, a send that waits for a yes
+    and then lands in a container's tmux pane, and a spoken request."""
+
+    @classmethod
+    def setUpClass(cls):
+        idle = [c for c in Rig.containers if not sh(c, "tmux ls 2>/dev/null || true").strip()]
+        cls.c = idle[0] if idle else None
+        cls.servers_before = llm_servers()
+
+    def test_1_brief(self):
+        c = Rig.containers[0]
+        Rig.fire(c, "start", f"{TAG}-al1")
+        self.assertIsNotNone(wait_for(lambda: session(f"{TAG}-al1")))
+        before = alfred_state().get("reply")
+        self.assertEqual(api("/alfred/ask", "POST", {"text": "what's going on?"}), (200, {"ok": True}))
+        reply = alfred_says(before, 10)
+        self.assertRegex(reply, r"^\d+ sessions?\.", reply)
+        self.assertIn(c.replace("-", " "), reply)
+        Rig.fire(c, "end", f"{TAG}-al1")
+
+    def test_2_send_waits_for_yes_then_lands_in_the_pane(self):
+        if not self.c:
+            self.skipTest("no container without a tmux server of yours")
+        if not os.path.exists(os.path.expanduser("~/.local/opt/local-ai/bin/llm-server")):
+            self.skipTest("no local model; Haiku would be called")
+        c, cwd, sid = self.c, f"{CT_DIR}/proj", f"{TAG}-al2"
+        for s in [s for s in sessions() if s["id"].startswith(TAG)]:
+            Rig.fire(Rig.containers[0], "end", s["id"])
+        sh(c, f"tmux new-session -d -s {TAG} -c {cwd} 'cat; exec sleep 600'")
+        try:
+            Rig.fire(c, "start", sid, cwd=cwd)
+            self.assertIsNotNone(wait_for(lambda: session(sid)))
+            api("/alfred/summon", "POST", {})          # warms the local model, like the hotkey
+            before = alfred_state().get("reply")
+            api("/alfred/ask", "POST", {"text": f"tell the proj session to print the word {TAG}"})
+            reply = alfred_says(before, 90)
+            pending = alfred_state().get("pending")
+            self.assertTrue(pending, f"no send to confirm; Alfred said: {reply}")
+            routed = [l for l in daemon_log_tail(40).splitlines() if "alfred: routed by" in l]
+            self.assertTrue(routed and "local model" in routed[-1], f"routing did not come from Gemma: {routed}")
+            print(f"\n    {routed[-1].split('] ', 1)[-1]}", file=sys.stderr)
+            self.assertEqual(pending["sid"], sid)
+            self.assertIn(TAG, pending["text"])
+            self.assertNotIn(TAG, sh(c, f"tmux capture-pane -p -t {TAG}:"), "sent before the yes")
+            self.assertEqual(api("/alfred/confirm", "POST", {"id": pending["id"]}), (200, {"ok": True}))
+            self.assertTrue(wait_for(lambda: TAG in sh(c, f"tmux capture-pane -p -t {TAG}:"), 5))
+            Rig.fire(c, "end", sid, cwd=cwd)
+        finally:
+            sh(c, f"tmux kill-session -t ={TAG} 2>/dev/null || true", check=False)
+
+    def test_3_spoken_request(self):
+        vpy = os.path.expanduser("~/.cc-pill/voice/.venv/bin/python")
+        if not alfred_state().get("can_listen"):
+            self.skipTest("no Whisper")
+        if not os.path.exists(vpy):
+            self.skipTest("no Kokoro voice to make the clip with")
+        make = ("import sys, numpy as np, soundfile as sf\n"
+                "from kokoro_onnx import Kokoro\n"
+                "k = Kokoro(sys.argv[2] + '/kokoro-v1.0.onnx', sys.argv[2] + '/voices-v1.0.bin')\n"
+                "s, sr = k.create(\"What's going on?\", voice='am_michael', speed=1.0)\n"
+                "n = int(len(s) * 16000 / sr)\n"
+                "s = np.interp(np.linspace(0, len(s) - 1, n), np.arange(len(s)), s).astype(np.float32)\n"
+                "sf.write(sys.argv[1], s, 16000, subtype='PCM_16')\n")
+        subprocess.run([vpy, "-c", make, Rig.clip, os.path.expanduser("~/.cc-pill/voice/models")],
+                       check=True, capture_output=True, timeout=60)
+        Rig.fire(Rig.containers[0], "start", f"{TAG}-al3")
+        before = alfred_state().get("reply")
+        self.assertEqual(api("/alfred/listen", "POST", {"on": True}), (200, {"ok": True}))
+        self.assertTrue(wait_for(lambda: alfred_state().get("listening"), 3))
+        time.sleep(1)
+        self.assertEqual(api("/alfred/listen", "POST", {"on": False}), (200, {"ok": True}))
+        reply = alfred_says(before, 30)
+        self.assertRegex(alfred_state().get("you", ""), r"(?i)what'?s going on")
+        self.assertRegex(reply, r"^\d+ sessions?\.", reply)
+        self.assertEqual([n for n in os.listdir(os.path.join(Rig.data, "alfred")) if n.endswith(".wav")], [],
+                         "the recording must be deleted")
+        Rig.fire(Rig.containers[0], "end", f"{TAG}-al3")
+
+
 class T9_NoTrace(unittest.TestCase):
     """Last: tear everything down and prove nothing on the system changed."""
 
     def test_nothing_changed(self):
         Rig.down()
         Rig.unit = None
-        time.sleep(0.5)
+        time.sleep(1.0)
+        self.assertEqual(llm_servers(), T8_Alfred.__dict__.get("servers_before", 0),
+                         "the daemon must stop the model server it started")
         after = fingerprint(Rig.containers)
         diff = {k: (Rig.before[k], after[k]) for k in Rig.before if Rig.before[k] != after[k]}
         self.assertEqual(diff, {})

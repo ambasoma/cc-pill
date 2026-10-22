@@ -40,7 +40,7 @@ class FakeRunner:
         self.rules = list(rules or [])
         self.calls = []
 
-    def __call__(self, args, timeout=8):
+    def __call__(self, args, timeout=8, **kw):
         self.calls.append(list(args))
         for prefix, result in self.rules:
             if tuple(args[:len(prefix)]) == tuple(prefix):

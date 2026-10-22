@@ -40,6 +40,7 @@ package() {
 
   # the tree setup.sh expects, under /usr/share/cc-pill
   install -Dm755 linux/daemon/ccpilld.py -t "$share/linux/daemon"
+  install -Dm644 linux/daemon/alfred.py -t "$share/linux/daemon"
   install -Dm755 linux/bin/ccpill-ask linux/bin/cc-pill-place linux/bin/cc-pill-containers -t "$share/linux/bin"
   install -Dm755 linux/setup.sh -t "$share/linux"
   install -Dm644 linux/share/cc-pill-ask.desktop -t "$share/linux/share"
