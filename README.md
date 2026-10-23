@@ -293,6 +293,7 @@ Setup writes this for you; edit and restart the daemon (`systemctl --user restar
 | (no key) | | Briefings use the same local model. Short plain messages (most permission prompts) are spoken as they are, with no model call; a bare "ok" is not spoken. With no local model, only short plain messages are spoken, or "A turn finished." |
 | `briefing_max_words` | `25` | Cap on a spoken briefing; a decision may run slightly over. `0` lifts it. |
 | `briefing_gap_seconds` | `2.5` | Silence between two briefings that would otherwise run together. |
+| `speak_only_when_needed` | `false` | Speak only when a session needs you: a turn that ends asking you something, or a permission prompt. Other turns stay quiet. |
 | `bridge_host` | | The host's LXD bridge address the containers post to (written by `cc-pill-containers`). |
 | `containers` | | `{"<container>": "<token>"}`, one per wired container (written by `cc-pill-containers`). |
 | `lxc_bin` | auto | Path to the `lxc` client. |

@@ -579,6 +579,44 @@ def stop_playback():
         _run(["killall", "afplay"])
 
 
+LOCK_WAIT = 150.0        # seconds a briefing waits for its turn to speak
+LOCK_WAIT_ASK = 600.0    # a replay or an answer the user asked for
+
+
+def pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+
+
+def take_lock(wait, now=time.time, sleep=time.sleep):
+    """The playback lock, or False when it isn't free within `wait` seconds.
+    A lock whose owner process is gone (a crashed worker) is cleared."""
+    end = now() + wait
+    while True:
+        try:
+            fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                with open(LOCK) as f:
+                    holder = int(f.read().strip() or 0)
+                if holder <= 0 or not pid_alive(holder) or now() - os.path.getmtime(LOCK) > 900:
+                    os.unlink(LOCK)
+                    continue
+            except (OSError, ValueError):
+                continue        # gone, or being written: try again
+        if now() > end:
+            return False
+        sleep(0.25)
+
+
 def wait_for_gap(cfg, now=time.time, sleep=time.sleep):
     """Hold until briefing_gap_seconds have passed since the last briefing
     ended (last-spoke is stamped when playback finishes). Returns the wait."""
@@ -622,23 +660,16 @@ def speak(text, cfg, meta=None, announce=True, ask=None):
             pass
         return
 
-    # Serialize playback across concurrent sessions (stale locks expire).
-    waited = 0
-    while waited < 120:
+    # One voice at a time, never more: without the lock nothing plays. A
+    # briefing that waited too long is old news and is dropped; an ask the
+    # user made waits longer (it also stopped whatever was playing).
+    if not take_lock(LOCK_WAIT_ASK if ask is not None else LOCK_WAIT):
+        print(f"[{time.strftime('%H:%M:%S')}] (waited too long to speak, dropped): {text[:60]}", flush=True)
         try:
-            fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            os.write(fd, str(os.getpid()).encode())
-            os.close(fd)
-            break
-        except FileExistsError:
-            try:
-                if time.time() - os.path.getmtime(LOCK) > 120:
-                    os.unlink(LOCK)
-                    continue
-            except FileNotFoundError:
-                continue
-            time.sleep(0.5)
-            waited += 0.5
+            os.unlink(wav)
+        except FileNotFoundError:
+            pass
+        return
     if ask is not None and not ask_is_latest(ask):
         # A newer click replaced this one while it was synthesized or waited
         # for the lock: play nothing, and hand the lock on at once.
@@ -728,6 +759,9 @@ def main():
         # unless it has been a while since the user last heard from us.
         is_permission = ("permission" in msg.lower() or "approval" in msg.lower()
                          or "permission" in ntype)
+        if not is_permission and cfg.get("speak_only_when_needed"):
+            print(f"[{time.strftime('%H:%M:%S')}] notify: (not a permission prompt, stayed quiet)", flush=True)
+            return
         if not is_permission:
             quiet = None
             try:
@@ -780,6 +814,11 @@ def main():
             )
         if not isinstance(raw, str) or not raw.strip():
             raw = last_assistant_text(payload.get("transcript_path", ""))
+        # Only when the session needs you: a turn that ends asking you
+        # something. Anything else stays quiet, with no model call.
+        if cfg.get("speak_only_when_needed") and raw and not has_question(raw):
+            print(f"[{time.strftime('%H:%M:%S')}] stop: (nothing needs you, stayed quiet)", flush=True)
+            return
 
     if not raw:
         return

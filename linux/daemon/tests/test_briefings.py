@@ -272,6 +272,27 @@ class ReplayRaceTest(unittest.TestCase):
             p.stop()
         shutil.rmtree(self.tmp)
 
+    def test_the_lock_is_not_taken_from_a_live_owner(self):
+        with open(worker.LOCK, "w") as f:
+            f.write(str(os.getpid()))     # alive: this test process
+        t = {"now": 0.0}
+        got = worker.take_lock(worker.LOCK_WAIT, now=lambda: t["now"],
+                               sleep=lambda s: t.__setitem__("now", t["now"] + s))
+        self.assertFalse(got)
+        self.assertGreaterEqual(t["now"], worker.LOCK_WAIT)
+        self.assertTrue(os.path.exists(worker.LOCK), "the owner keeps its lock")
+
+    def test_nothing_plays_without_the_lock(self):
+        with mock.patch.object(worker, "take_lock", lambda wait: False):
+            worker.speak("too late", {"voice": "v", "speed": 1.0, "volume": 0.5})
+        self.assertEqual(self.played, [])
+
+    def test_a_dead_owners_lock_is_cleared(self):
+        with open(worker.LOCK, "w") as f:
+            f.write("999999999")          # no such process
+        worker.speak("go", {"voice": "v", "speed": 1.0, "volume": 0.5, "briefing_gap_seconds": 0})
+        self.assertEqual(self.played, ["go"])
+
     def test_a_newer_click_replaces_one_still_synthesizing(self):
         cfg = {"voice": "v", "speed": 1.0, "volume": 0.5}
         self.synth_gate["A"] = self.threading.Event()
@@ -493,6 +514,43 @@ class WorkerTest(unittest.TestCase):
         self.assertEqual(spoken["text"], "web dev: Everything passes now.")
         self.assertEqual(spoken["meta"], {"sid": "s1", "repo": "todo-app"})
         self.assertEqual(spoken["screen"], ("/root/workspace/todo-app", ["lxc", "exec", "web-dev", "--"]))
+
+    def run_job(self, job, **cfg_extra):
+        path = os.path.join(self.tmp, "job.json")
+        with open(path, "w") as f:
+            json.dump(job, f)
+        spoken = []
+        cfg = dict(worker.load_config(), enabled=True, **cfg_extra)
+        with mock.patch.object(worker, "load_config", lambda: cfg), \
+                mock.patch.object(worker, "summarize", lambda *a, **k: "Should I open the merge request?"), \
+                mock.patch.object(worker, "session_on_screen", lambda *a, **k: False), \
+                mock.patch.object(worker, "speak", lambda text, cfg, meta=None: spoken.append(text)), \
+                mock.patch.object(worker, "STOP_STAMP", os.path.join(self.tmp, "last-stop")), \
+                mock.patch.object(worker, "NOTIFY_STAMP", os.path.join(self.tmp, "last-notify")), \
+                mock.patch.object(worker, "SPOOL", self.tmp), \
+                mock.patch.object(sys, "argv", ["worker.py", path]):
+            worker.main()
+        return spoken
+
+    def test_only_when_needed_speaks_a_question(self):
+        job = {"pill_mode": "stop", "session_id": "s1", "cwd": "/home/u/app",
+               "last_assistant_message": "All tests pass. Want me to open the merge request?"}
+        self.assertEqual(self.run_job(job, speak_only_when_needed=True), ["Should I open the merge request?"])
+
+    def test_only_when_needed_stays_quiet_on_plain_news(self):
+        job = {"pill_mode": "stop", "session_id": "s1", "cwd": "/home/u/app",
+               "last_assistant_message": "Pushed the fix and CI is green."}
+        with mock.patch.object(worker, "local_summary", lambda *a, **k: self.fail("no model call")):
+            self.assertEqual(self.run_job(job, speak_only_when_needed=True), [])
+        self.assertEqual(len(self.run_job(job)), 1, "with the setting off it speaks as before")
+
+    def test_only_when_needed_keeps_permission_prompts_only(self):
+        perm = {"pill_mode": "notify", "session_id": "s1", "cwd": "/x", "message": "Claude needs your permission to use Bash",
+                "notification_type": "permission_prompt"}
+        idle = {"pill_mode": "notify", "session_id": "s1", "cwd": "/x", "message": "Claude is waiting for your input",
+                "notification_type": "idle_prompt"}
+        self.assertEqual(len(self.run_job(perm, speak_only_when_needed=True)), 1)
+        self.assertEqual(self.run_job(idle, speak_only_when_needed=True), [])
 
     def test_host_briefing_has_no_prefix(self):
         job = os.path.join(self.tmp, "job.json")
