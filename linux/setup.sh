@@ -5,6 +5,8 @@
 #   ./linux/setup.sh containers [name...]
 #                             wire Claude Code inside LXD containers to the pill
 #   ./linux/setup.sh update   bring the install up to date with this checkout
+#   ./linux/setup.sh uninstall [--dry-run] [--yes]
+#                             remove cc-pill from this machine and the containers
 set -euo pipefail
 
 # ---------- plain fallbacks (used until gum is installed, or without it) ----------
@@ -446,6 +448,214 @@ if [ "$MODE" = "update" ]; then
   fi
   echo
   ok "${B}Up to date.${N}"
+  echo
+  exit 0
+fi
+
+# ================= uninstall subcommand =================
+# Remove everything setup put on this machine and in the containers, and
+# nothing else: each item is matched by what setup wrote (its paths, its
+# tags, its marker lines), files are backed up before they are edited, and
+# the repo checkout is never deleted. --dry-run shows the plan only.
+if [ "$MODE" = "uninstall" ]; then
+  DRY=0; YES=0
+  for a in "${@:2}"; do
+    case "$a" in --dry-run) DRY=1 ;; --yes) YES=1 ;; *) die "unknown option: $a (use --dry-run or --yes)" ;; esac
+  done
+  banner
+  [ "$PACKAGED" = 1 ] && warn "installed by your package manager: after this, remove the package too (pacman -R cc-pill-kde-git)"
+  INSTALL=$(installed_at); [ -n "$INSTALL" ] || INSTALL="$DATA"
+  UNIT="$HOME/.config/systemd/user/cc-pill.service"
+  DESKTOP="$HOME/.local/share/applications/cc-pill-ask.desktop"
+  SETTINGS="$HOME/.claude/settings.json"
+  WIRED=$(python3 -c "import json,sys
+try: print(' '.join(sorted(json.load(open(sys.argv[1])).get('containers') or {})))
+except Exception: pass" "$DATA/config.json" 2>/dev/null || true)
+  # The repo itself is never deleted: an install made in place leaves it.
+  INPLACE=0; [ "$(readlink -f "$INSTALL")" = "$(readlink -f "$REPO")" ] && INPLACE=1
+
+  # One Python pass over the two files setup edits: find (or, with --apply,
+  # remove) exactly our entries. Prints one line per thing found.
+  edit_files() {  # edit_files plan|apply
+    python3 - "$1" "$SETTINGS" "$SHELL_RC" "$INSTALL" "$DATA" <<'PYEOF'
+import json, os, re, shutil, sys, time
+mode, settings, rc, install, data = sys.argv[1:6]
+apply = mode == "apply"
+stamp = time.strftime("%Y%m%d-%H%M%S")
+
+def ours(cmd):
+    """A hook command setup wrote: python3 "<cc-pill install>/(hooks|voice)/hook.py" <mode>."""
+    m = re.fullmatch(r'python3 "(.+)/(hooks|voice)/hook\.py" (start|prompt|tool|end|stop|notify)', cmd)
+    if not m:
+        return False
+    root = os.path.realpath(m.group(1))
+    return root in (os.path.realpath(install), os.path.realpath(data)) \
+        or os.path.exists(os.path.join(root, "linux", "daemon", "ccpilld.py"))
+
+# ~/.claude/settings.json: our hook entries only
+if os.path.exists(settings):
+    try:
+        with open(settings) as f:
+            cfg = json.load(f)
+    except ValueError:
+        print(f"skip|{settings} is not valid JSON: left as it is; remove the cc-pill hooks by hand")
+        cfg = None
+    if isinstance(cfg, dict) and isinstance(cfg.get("hooks"), dict):
+        n = 0
+        for event in list(cfg["hooks"]):
+            groups = []
+            for g in cfg["hooks"][event] if isinstance(cfg["hooks"][event], list) else []:
+                inner = [h for h in g.get("hooks", []) if not ours(str(h.get("command", "")))]
+                n += len(g.get("hooks", [])) - len(inner)
+                if inner:
+                    groups.append(dict(g, hooks=inner))
+            if groups:
+                cfg["hooks"][event] = groups
+            else:
+                del cfg["hooks"][event]
+        if not cfg["hooks"]:
+            del cfg["hooks"]
+        if n:
+            print(f"item|{n} cc-pill hook entries in {settings} (your other settings stay)")
+            if apply:
+                shutil.copy2(settings, f"{settings}.before-cc-pill-uninstall-{stamp}")
+                tmp = settings + ".cc-pill-tmp"
+                with open(tmp, "w") as f:
+                    json.dump(cfg, f, indent=2)
+                os.chmod(tmp, os.stat(settings).st_mode & 0o7777)
+                os.replace(tmp, settings)
+                print(f"done|cc-pill hooks removed from {settings} (backup: {settings}.before-cc-pill-uninstall-{stamp})")
+    backup = settings + ".pre-cc-pill"
+    if os.path.exists(backup):
+        print(f"item|setup's backup {backup}")
+        if apply:
+            os.remove(backup)
+            print(f"done|removed {backup}")
+
+# the shell rc: the alias to our pillctl, and the claude wrapper block
+if os.path.exists(rc):
+    lines = open(rc).read().split("\n")
+    voice_dirs = {os.path.realpath(os.path.join(install, "voice")), os.path.realpath(os.path.join(data, "voice"))}
+    keep, found = [], []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = re.fullmatch(r"alias ([a-z0-9]+)='(.+)/pillctl'", line)
+        if m and os.path.realpath(m.group(2)) in voice_dirs:
+            found.append(f"the '{m.group(1)}' alias")
+            i += 1
+            continue
+        if line.startswith("# --- cc-pill claude wrapper:"):
+            # the block setup appended: up to the closing brace of claude()
+            j = i
+            while j < len(lines) and lines[j] != "}":
+                j += 1
+            block = "\n".join(lines[i:j + 1])
+            if j < len(lines) and "claude() {" in block and "tmux new-session" in block and j - i < 30:
+                if keep and keep[-1] == "":
+                    keep.pop()          # the blank line setup put before it
+                found.append("the claude tmux wrapper")
+                i = j + 1
+                continue
+            print(f"skip|{rc}: a cc-pill wrapper marker, but not the block setup writes: left as it is")
+        keep.append(line)
+        i += 1
+    if found:
+        print(f"item|{' and '.join(found)} in {rc}")
+        if apply:
+            shutil.copy2(rc, f"{rc}.before-cc-pill-uninstall-{stamp}")
+            with open(rc, "w") as f:
+                f.write("\n".join(keep))
+            print(f"done|removed {' and '.join(found)} from {rc} (backup: {rc}.before-cc-pill-uninstall-{stamp})")
+PYEOF
+  }
+
+  # Plasma: our widget, the spacers placement tagged, a panel it made and
+  # that is empty now. Nothing untagged.
+  PLASMA_JS='var n = 0, list = [];
+for (const c of panels().concat(desktops())) {
+  for (const w of c.widgets("com.ccpill.pill")) { list.push(w); }
+  for (const w of c.widgets("org.kde.plasma.panelspacer")) {
+    w.currentConfigGroup = ["General"];
+    if (String(w.readConfig("ccpillSpacer", false)) == "true") list.push(w);
+  }
+}
+if (__APPLY__) {
+  for (const w of list) w.remove();
+  for (const p of panels()) {
+    p.currentConfigGroup = ["General"];
+    if (String(p.readConfig("ccpillPanel", false)) == "true" && p.widgetIds.length == 0) p.remove();
+  }
+}
+print(list.length);'
+  plasma() {  # plasma 0|1 -> number of our widgets (found, or removed)
+    command -v qdbus6 >/dev/null || { echo ""; return; }
+    qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript "${PLASMA_JS/__APPLY__/$1}" 2>/dev/null | tail -1
+  }
+
+  # ---- the plan
+  head_ "Uninstalling cc-pill" "Everything below is removed; nothing else is touched."
+  PLAN=()
+  for c in $WIRED; do PLAN+=("container $c: the cc-pill hook in its Claude settings, and its ~/.cc-pill/hook.py and remote.json"); done
+  while IFS='|' read -r kind text; do
+    case "$kind" in item) PLAN+=("$text") ;; skip) warn "$text" ;; esac
+  done < <(edit_files plan)
+  [ -f "$UNIT" ] && PLAN+=("the daemon service $UNIT (stopping it stops the local model it started)")
+  NW=$(plasma 0); [ -n "$NW" ] && [ "$NW" != "0" ] && PLAN+=("$NW cc-pill widget(s) and spacer(s) on your panels")
+  [ -d "$HOME/.local/share/plasma/plasmoids/com.ccpill.pill" ] && PLAN+=("the widget package (~/.local/share/plasma/plasmoids/com.ccpill.pill)")
+  [ -f "$DESKTOP" ] && PLAN+=("the hotkey: $DESKTOP and its entry in ~/.config/kglobalshortcutsrc")
+  if [ -d "$DATA" ]; then
+    if [ "$INPLACE" = 1 ]; then
+      PLAN+=("$DATA (config, logs, state; the install is your checkout $REPO, which stays)")
+    else
+      PLAN+=("$DATA: the install, config, container tokens, logs and the voice runtime ($(du -sh "$DATA" 2>/dev/null | cut -f1))")
+    fi
+  fi
+  if [ "${#PLAN[@]}" = 0 ]; then ok "nothing of cc-pill found"; exit 0; fi
+  for p in "${PLAN[@]}"; do printf "  - %s\n" "$p"; done
+  echo "  Kept: your repo checkout, ~/.local/opt/local-ai (the local models), your other hooks and rc lines."
+  if [ "$DRY" = 1 ]; then ok "dry run: nothing changed"; exit 0; fi
+  if [ "$YES" != 1 ]; then
+    ui_confirm "Remove all of the above?" "n" || { ok "nothing changed"; exit 0; }
+  fi
+
+  # ---- doing it; each step says what it did
+  if [ -n "$WIRED" ]; then
+    WIRE_FROM="$INSTALL"; [ -f "$WIRE_FROM/linux/bin/cc-pill-containers" ] || WIRE_FROM="$REPO"
+    # shellcheck disable=SC2086
+    python3 "$WIRE_FROM/linux/bin/cc-pill-containers" remove $WIRED --no-restart \
+      || warn "some containers kept their hook (see above); run: cc-pill-containers remove <name>"
+  fi
+  while IFS='|' read -r kind text; do
+    case "$kind" in done) ok "$text" ;; skip) warn "$text" ;; esac
+  done < <(edit_files apply)
+  if [ -f "$UNIT" ]; then
+    systemctl --user disable --now cc-pill.service >/dev/null 2>&1 || true
+    rm -f "$UNIT"
+    systemctl --user daemon-reload >/dev/null 2>&1 || true
+    ok "daemon stopped and its service removed"
+  fi
+  NW=$(plasma 1); [ -n "$NW" ] && [ "$NW" != "0" ] && ok "removed $NW widget(s) and spacer(s) from your panels"
+  if [ -d "$HOME/.local/share/plasma/plasmoids/com.ccpill.pill" ]; then
+    kpackagetool6 --type Plasma/Applet --remove com.ccpill.pill >/dev/null 2>&1 && ok "widget package removed" \
+      || warn "could not remove the widget package: kpackagetool6 --type Plasma/Applet --remove com.ccpill.pill"
+  fi
+  if [ -f "$DESKTOP" ]; then
+    rm -f "$DESKTOP"
+    command -v kwriteconfig6 >/dev/null && kwriteconfig6 --file kglobalshortcutsrc --group services \
+      --group cc-pill-ask.desktop --key _launch --delete
+    command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 >/dev/null 2>&1 || true
+    ok "hotkey removed"
+  fi
+  if [ -d "$DATA" ]; then
+    if [ "$(readlink -f "$DATA")" = "$(readlink -f "$REPO")" ]; then
+      warn "$DATA is your checkout: left as it is"
+    else
+      rm -rf "$DATA" && ok "removed $DATA"
+    fi
+  fi
+  echo
+  ok "${B}cc-pill is uninstalled.${N} Open a new shell for the alias change."
   echo
   exit 0
 fi

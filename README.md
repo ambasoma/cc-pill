@@ -334,14 +334,11 @@ tail -f <install>/voice/spool/voice.log   # what the voice said, or why it staye
 <br>
 
 ```sh
-systemctl --user disable --now cc-pill.service
-rm ~/.config/systemd/user/cc-pill.service
-kpackagetool6 --type Plasma/Applet --remove com.ccpill.pill
-rm ~/.local/share/applications/cc-pill-ask.desktop
-rm -rf ~/.cc-pill            # events, state, config, logs
+./linux/setup.sh uninstall --dry-run   # show what would go; changes nothing
+./linux/setup.sh uninstall             # lists it again and asks (default: no)
 ```
 
-Then remove the `cc-pill` hook entries from `~/.claude/settings.json` and, if you accepted it, the tmux wrapper line from your shell rc.
+It removes what setup put on this machine and in the wired containers, matched by what setup wrote: the hooks it added to `~/.claude/settings.json` (your other hooks stay) and to each container, the daemon service (which stops the local model it started), the widget and the spacers placement added, the hotkey, the `alfred` alias and the tmux wrapper in your shell rc, and `~/.cc-pill`. Files it edits are backed up first (`*.before-cc-pill-uninstall-<time>`); a block that doesn't look like what setup wrote is left alone, with a warning. Your checkout and `~/.local/opt/local-ai` stay. Installed from the Arch package: run it, then `pacman -R cc-pill-kde-git`.
 
 </details>
 
