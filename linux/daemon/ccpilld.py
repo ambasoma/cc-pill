@@ -296,12 +296,12 @@ class Session:
         self.remote = remote
         self.container = container  # LXD container name, "" on the host
 
-    def to_json(self):
+    def to_json(self, muted=False):
         return {
             "id": self.id, "repo": self.repo, "cwd": self.cwd, "pid": self.pid,
             "state": self.state, "since": self.since, "activity": self.activity,
             "activity_at": self.activity_at, "last_briefing": self.last_briefing,
-            "remote": self.remote, "container": self.container,
+            "remote": self.remote, "container": self.container, "muted": muted,
         }
 
 
@@ -337,6 +337,7 @@ class Store:
         self.lock = threading.RLock()
 
         self.sessions = []
+        self.muted = set()                # session ids the voice stays quiet for
         self.briefing = None
         self.moment = None
         self.narration = ""
@@ -474,6 +475,9 @@ class Store:
         its own for the summary. Its hook sent the text along."""
         if not self.voice_available() or self.voice_muted():
             return False
+        if evt.get("sid") in self.muted:
+            log(f"briefing skipped: {container} [{short(evt.get('sid'))}] is muted")
+            return False
         now = self.clock()
         key = (evt.get("sid") or "", evt.get("type"))
         if now - self._brief_last.get(key, -BRIEF_WINDOW) < BRIEF_WINDOW:
@@ -589,6 +593,7 @@ class Store:
                 log(f"waiting: {repo} [{short(sid)}]")
         elif typ == "end":
             self.sessions = [s for s in self.sessions if s.id != sid]
+            self.muted.discard(sid)
             log(f"session end: {repo} [{short(sid)}]")
         elif typ == "briefing":
             text = evt.get("text") or ""
@@ -719,6 +724,8 @@ class Store:
                 s = Session(sid, d.get("repo") or "?", d.get("cwd") or "", pid, state,
                             float(d.get("since") or self.clock()), bool(d.get("remote")), d.get("container") or "")
                 s.last_briefing = d.get("last_briefing")
+                if d.get("muted") is True:
+                    self.muted.add(sid)
                 self.sessions.append(s)
                 n += 1
         if n:
@@ -764,7 +771,7 @@ class Store:
                 "v": self.version,
                 "t": now,
                 "pill": {"state": state, "label": label, "narration": self.narration},
-                "sessions": [s.to_json() for s in self.sessions],
+                "sessions": [s.to_json(s.id in self.muted) for s in self.sessions],
                 "briefing": dict(self.briefing) if self.briefing else None,
                 "moment": dict(self.moment) if self.moment else None,
                 "voice": {
@@ -824,6 +831,19 @@ class Store:
                 pass
             self.stop_speech()
             log("voice muted")
+            return True
+
+    def mute_session(self, sid, on):
+        """Keep the voice quiet for one session, or let it speak again."""
+        with self.lock:
+            s = self._find(sid)
+            if s is None:
+                return False
+            if on:
+                self.muted.add(sid)
+            else:
+                self.muted.discard(sid)
+            log(f"session {'muted' if on else 'unmuted'}: {s.repo} [{short(sid)}]")
             return True
 
     def speak(self, text):
@@ -1082,6 +1102,8 @@ def make_handler(store, bridge=False):
             elif route == "/mute":
                 self._send(200, {"ok": True, "muted": store.toggle_mute()})
                 return
+            elif route == "/session/mute":
+                ok = store.mute_session(sid, body.get("on") is True)
             elif route == "/place":
                 ok = store.place(body.get("edge"), body.get("align"))
             elif route == "/stop":

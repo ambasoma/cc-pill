@@ -256,6 +256,20 @@ Item {
                                 PlasmaComponents3.ToolTip.visible: hovered
                             }
                             PlasmaComponents3.ToolButton {
+                                // shows at rest while muted, so the state is visible
+                                display: PlasmaComponents3.AbstractButton.IconOnly
+                                icon.name: row.modelData.muted ? "audio-volume-muted-symbolic" : "audio-volume-high-symbolic"
+                                text: row.modelData.muted ? "Unmute this session" : "Mute this session"
+                                checkable: true
+                                checked: !!row.modelData.muted
+                                opacity: row.active || activeFocus || row.modelData.muted ? 1 : 0
+                                Behavior on opacity { NumberAnimation { duration: Kirigami.Units.shortDuration } }
+                                onClicked: card.ctl.post("/session/mute", { sid: row.modelData.id, on: !row.modelData.muted })
+                                Accessible.name: text
+                                PlasmaComponents3.ToolTip.text: text
+                                PlasmaComponents3.ToolTip.visible: hovered
+                            }
+                            PlasmaComponents3.ToolButton {
                                 // last, at the edge: the one button that shows at rest
                                 display: PlasmaComponents3.AbstractButton.IconOnly
                                 icon.name: row.speaking ? "media-playback-stop-symbolic" : "media-playback-start-symbolic"

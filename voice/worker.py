@@ -41,6 +41,8 @@ STOP_STAMP = os.path.join(SPOOL, "last-stop")
 # the newest gives way instead of playing over the click that replaced it.
 LATEST_ASK = os.path.join(SPOOL, "latest-ask")
 CONFIG = os.path.expanduser("~/.cc-pill/config.json")
+# The daemon's published state: which sessions the user muted.
+STATE = os.path.expanduser("~/.cc-pill/state.json")
 
 MODEL_ONNX = os.path.join(VOICE_DIR, "models", "kokoro-v1.0.onnx")
 VOICES_BIN = os.path.join(VOICE_DIR, "models", "voices-v1.0.bin")
@@ -687,6 +689,20 @@ def speak(text, cfg, meta=None, announce=True, ask=None):
                 pass
 
 
+def session_muted(sid):
+    """True when the pill has this session muted. Best effort: any trouble
+    reading the state means speak as before."""
+    if not sid:
+        return False
+    try:
+        with open(STATE) as f:
+            sessions = json.load(f).get("sessions") or []
+        return any(isinstance(s, dict) and s.get("id") == sid and s.get("muted") is True
+                   for s in sessions)
+    except Exception:
+        return False
+
+
 def main():
     job_path = sys.argv[1]
     with open(job_path) as f:
@@ -698,6 +714,9 @@ def main():
 
     cfg = load_config()
     if not cfg.get("enabled"):
+        return
+    if session_muted(payload.get("session_id", "")):
+        print(f"[{time.strftime('%H:%M:%S')}] (muted session, stayed quiet)", flush=True)
         return
 
     mode = payload.get("pill_mode", "stop")
