@@ -390,7 +390,7 @@ if [ "$MODE" = "update" ]; then
     # state, logs) and holds the voice runtime; none of that is touched,
     # and nothing there is ever deleted.
     CHANGED=$(rsync -a --checksum --itemize-changes \
-      --exclude .git --exclude '__pycache__' --exclude 'app/.build' --exclude 'app/Pill.app' \
+      --exclude .git --exclude '/.claude' --exclude '__pycache__' --exclude 'app/.build' --exclude 'app/Pill.app' \
       --exclude '/config.json' --exclude '/events' --exclude '/state.json' --exclude '/pill.log' \
       --exclude 'voice/.venv' --exclude 'voice/models' --exclude 'voice/spool' \
       --exclude 'voice/prompt.txt' --exclude 'voice/.off' \
