@@ -262,7 +262,7 @@ worker.speak("Hello. Your session just finished, and everything went beautifully
 PYEOF
 }
 
-voice_questions() {  # voice + name + personality + summarizer -> config + prompt.txt
+voice_questions() {  # voice + name + personality -> config + prompt.txt
   local vdir="$1"
   cd "$vdir"
 
@@ -294,23 +294,12 @@ voice_questions() {  # voice + name + personality + summarizer -> config + promp
   head_ "Personality" "How $NAME talks about your work."
   local P1="Playful butler       · cheeky, warm, quick with a tease"
   local P2="Calm professional    · crisp, factual, zero fluff"
-  local P3="Describe it          · Claude writes the persona from your description"
   local P4="Write your own       · paste persona text"
   local pchoice
-  ui_choose pchoice "Pick a personality" "$P1" "$P2" "$P3" "$P4"
+  ui_choose pchoice "Pick a personality" "$P1" "$P2" "$P4"
   PERSONA=""
   case "$pchoice" in
     "$P2") PERSONA="- Tone: calm and professional. Crisp declarative sentences, no jokes, no filler. Think a great radio news editor: warm enough to be human, disciplined enough to never waste a word.";;
-    "$P3") local PDESC=""
-       ui_input PDESC "Describe the personality you want" "dry wit, encouraging, slightly dramatic"
-       local GENPROMPT="Write a tone/personality instruction block for a spoken assistant named $NAME who verbally briefs a developer about their coding sessions. The personality wanted: $PDESC. Write 3-5 sentences of instruction in the second person (like 'Tone: ...'), starting with '- Tone:'. Output ONLY the instruction block, no preamble."
-       if [ "$HASGUM" = 1 ]; then
-         PERSONA=$(gum spin --spinner moon --title "Haiku is writing the persona..." --show-output -- \
-           env PILL_INNER=1 claude -p --model haiku "$GENPROMPT") || PERSONA=""
-       else
-         PERSONA=$(PILL_INNER=1 claude -p --model haiku "$GENPROMPT" 2>/dev/null) || PERSONA=""
-       fi
-       if [ -z "$PERSONA" ]; then warn "generation failed, using playful default"; fi;;
     "$P4") ui_write PERSONA "Your persona text";;
   esac
   if [ -z "$PERSONA" ]; then
@@ -326,13 +315,10 @@ open(os.path.join(d, "prompt.txt"), "w").write(
 PYEOF
   ok "persona rendered"
 
-  ui_input SUMMODEL "Model for summarizing briefings" "haiku"
-
   cfg_set name "\"$NAME\""
   cfg_set voice "\"$VNAME\""
   cfg_set speed "1.05"
   cfg_set volume "0.7"
-  cfg_set summarizer_model "\"$SUMMODEL\""
   cfg_set notify_throttle_seconds "120"
   cfg_set enabled "true"
   cfg_set speaker "\"$vdir\""
@@ -522,7 +508,7 @@ else
 fi
 command -v python3 >/dev/null || die "python3 not found ($(pkg_hint python3))"
 python3 -c "import venv" 2>/dev/null || die "python3 venv module missing ($(pkg_hint python3-venv))"
-command -v claude >/dev/null || die "claude CLI not found (install Claude Code first)"
+command -v claude >/dev/null || ok "no claude CLI here: fine, the pill tracks sessions in containers and uses a local model"
 command -v systemctl >/dev/null || die "systemctl not found: the daemon runs as a systemd user service"
 MISSING=""
 for dep in tmux jq; do command -v "$dep" >/dev/null || MISSING="$MISSING $dep"; done

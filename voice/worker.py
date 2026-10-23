@@ -4,7 +4,9 @@
 Runs detached from the session (spawned by hook.py). Pipeline:
   1. Pull the text to speak (last assistant message for Stop, the
      notification message for Notification).
-  2. Rewrite it into a short spoken briefing with `claude -p` (Haiku).
+  2. Rewrite it into a short spoken briefing with the local model
+     (llama.cpp, started and stopped by the daemon). No local model: say a
+     short plain message as it is, else that a turn finished.
   3. Synthesize with Kokoro (local ONNX) and play it.
 
 A spool lock serializes playback so two finishing sessions never talk
@@ -53,7 +55,6 @@ def load_config():
         "voice": "bm_george",
         "speed": 1.05,
         "volume": 0.7,
-        "summarizer_model": "haiku",
         "notify_throttle_seconds": 120,
         # Silence between two briefings that would otherwise run together.
         "briefing_gap_seconds": 2.5,
@@ -139,9 +140,9 @@ def trim_words(line, limit):
 
 
 def speakable_as_is(raw, max_words):
-    """Short plain English needs no summary: speak it and save the Haiku
-    call. Anything with code-ish characters still goes through Haiku, which
-    knows not to read paths and symbols aloud."""
+    """Short plain English needs no summary: speak it and save the model
+    call. Anything with code-ish characters still goes through the model,
+    which knows not to read paths and symbols aloud."""
     text = " ".join(raw.split())
     return (0 < len(text.split()) <= max(8, max_words)
             and not re.search(r"[`/\\_{}<>#*|$=~\[\]]|\.\w{1,5}\b|\d{4,}", text))
@@ -155,19 +156,139 @@ def clip(raw, limit=4000):
     return raw[:limit * 5 // 8] + "\n[...]\n" + raw[-(limit * 3 // 8):]
 
 
-def claude_bin():
-    """The claude CLI: config's claude_bin, the usual install places, PATH.
-    The worker can start under a bare PATH (a systemd user service)."""
-    cfg_bin = load_config().get("claude_bin")
-    for p in (cfg_bin, os.path.expanduser("~/.local/bin/claude"), "/usr/local/bin/claude", "/usr/bin/claude"):
-        if p and os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
-    return shutil.which("claude") or "claude"
+LOCAL_LLM = "http://127.0.0.1:8099"
+LLM_WAIT = 30.0          # seconds a briefing waits for the local model to load
+# A bare acknowledgement is not news: no model call, nothing said.
+ACK = re.compile(r"^\W*(ok(ay)?|done|sure|got it|yes|no|thanks?( you)?|noted|will do|on it)\W*$", re.I)
 
 
-def summarize(raw, mode, model, ctx_repo=None, max_words=0, container=""):
+def daemon_url(path):
+    cfg = load_config()
+    port = cfg.get("daemon_port", 17357)
+    return f"http://127.0.0.1:{port if isinstance(port, int) else 17357}{path}"
+
+
+def _post(url, body, timeout, headers=None):
+    import urllib.request
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers=dict({"Content-Type": "application/json"}, **(headers or {})))
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+        return json.loads(raw) if raw else {}
+
+
+def llm_ready(url):
+    import urllib.request
+    try:
+        urllib.request.urlopen(url + "/health", timeout=0.5).close()
+        return True
+    except Exception:
+        return False
+
+
+# A question for the user: a sentence that ends in "?". Code finds it; the
+# model only has to put it in plain words.
+QUESTION = re.compile(r"[^.!?\n]*\?")
+NEWS_ASK = {
+    "type": "object",
+    "properties": {"news": {"type": "string"}, "ask": {"type": "string", "minLength": 8}},
+    "required": ["news", "ask"],
+}
+
+
+# A file path in a spoken line ("~/.config/app/config.toml", "src/pool.rs"):
+# the persona says never to read them; a small model sometimes does.
+PATHLIKE = re.compile(r"(?<![\w])(?:~|\.{1,2})?/?(?:[\w.-]+/)+[\w.-]+|`[^`]*`")
+
+
+def speakable(line):
+    """The line with paths and code spans turned into words."""
+    line = PATHLIKE.sub("that path", line or "")
+    return re.sub(r"\bthat path(\s+that path)+", "that path", line)
+
+
+def has_question(raw):
+    return bool(QUESTION.search(raw[-1500:]))
+
+
+def compose(news, ask, max_words):
+    """What happened, then the question, which is never the part that is
+    cut: when both don't fit, the question goes alone."""
+    news = " ".join((news or "").split()).strip()
+    ask = " ".join((ask or "").split()).strip().rstrip(".!") + "?" if ask else ""
+    if ask.endswith("??"):
+        ask = ask[:-1]
+    if news and news[-1] not in ".!?":
+        news += "."
+    if not news or (max_words and len(news.split()) + len(ask.split()) > max_words + 5):
+        return ask
+    return f"{news} {ask}"
+
+
+def local_summary(system, message, url=None, wait=LLM_WAIT, sleep=time.sleep, clock=time.time, schema=None):
+    """The spoken line from the local model (llama.cpp, owned by the daemon),
+    or None when there is no local model.
+
+    The daemon starts the model and stops it when idle; each briefing tells
+    it the model is in use. The plain completion route with a rule that
+    allows no "<" keeps Gemma from opening a thought block before it
+    answers, which in chat mode it does whatever it is told."""
+    url = (url or load_config().get("alfred_llm_url") or LOCAL_LLM).rstrip("/")
+    try:
+        _post(daemon_url("/llm/warm"), {}, 2, {"X-CC-Pill": "1"})   # start it, or keep it alive
+    except Exception:
+        pass
+    end = clock() + wait
+    while not llm_ready(url):
+        if clock() > end:
+            return None
+        sleep(0.5)
+    mark = "\x00MESSAGE\x00"
+    try:
+        tpl = _post(url + "/apply-template", {
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": mark}],
+            "chat_template_kwargs": {"enable_thinking": False}}, 10)["prompt"]
+        if tpl.count(mark) != 1:
+            return None
+        # the model's control markers (<|turn>, <turn|>) must not come from a session
+        safe = message.replace("<|", "< |").replace("|>", "| >")
+        body = {"prompt": tpl.replace(mark, safe), "n_predict": 110, "temperature": 0.3, "cache_prompt": True}
+        if schema:
+            body.update({"json_schema": schema, "stop": ["}"]})   # no nested braces: "}" ends it
+        else:
+            body["grammar"] = "root ::= [^<]{1,400}"
+        out = _post(url + "/completion", body, 60)
+    except Exception:
+        return None
+    text = str(out.get("content") or "")
+    if schema:
+        m = re.search(r"\{.*", text, re.S)
+        try:
+            got = json.loads(m.group(0) + ("" if text.rstrip().endswith("}") else "}")) if m else None
+        except ValueError:
+            got = None
+        return got if isinstance(got, dict) else None
+    line = " ".join(text.split()).strip("\"' ")
+    return line or None
+
+
+def plain_fallback(raw, max_words):
+    """No local model: speak a short plain message as it is, else just say a
+    turn finished. Never code, paths or markdown read aloud."""
+    if speakable_as_is(raw, max_words):
+        return " ".join(raw.split())
+    return "A turn finished."
+
+
+def summarize(raw, mode, ctx_repo=None, max_words=0, container=""):
     with open(os.path.join(VOICE_DIR, "prompt.txt")) as f:
         prompt = f.read()
+    # Rules a small local model needs spelled out.
+    prompt += (
+        "\nIf the message asks the user something or waits on a decision, say what is being asked, "
+        "and never answer it or advise yourself: the user decides.\n"
+        "Never add news that is not in the message.\n"
+    )
     if max_words > 0:
         prompt += (
             f"\nHard limit: {max_words} words, one sentence, two at most. Only a "
@@ -193,28 +314,21 @@ def summarize(raw, mode, model, ctx_repo=None, max_words=0, container=""):
             "the user (a permission request or idle prompt). Say briefly that "
             "their attention is needed and for what. One sentence is ideal.\n"
         )
-    prompt += "\n<<<MESSAGE>>>\n" + clip(raw) + "\n<<<END>>>\n"
-
-    env = dict(os.environ, PILL_INNER="1")
-    try:
-        # No tools: the message comes from a session (maybe in a container)
-        # and must never make the summarizer read or run anything here.
-        out = subprocess.run(
-            [claude_bin(), "-p", "--model", model, "--tools", ""],
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=90,
-            env=env,
-        )
-        line = out.stdout.strip()
-        if out.returncode == 0 and line:
-            return line
-    except Exception:
-        pass
-    # Fallback: speak the first couple of sentences raw rather than staying silent.
-    plain = " ".join(raw.split())
-    return plain[:300] if plain else ""
+    if ACK.match(raw):
+        return "SKIP"
+    if mode == "stop" and has_question(raw):
+        # The question must reach the user, put to them, not answered:
+        # a small model drops or answers it unless the answer has a slot
+        # for it.
+        got = local_summary(prompt + (
+            "\nThe message asks the user a question. Answer as JSON: news is what happened, in one short "
+            "spoken sentence (may be empty); ask is that question, put to the user in plain spoken words. "
+            "Do not answer the question.\n"), clip(raw), schema=NEWS_ASK)
+        if got and str(got.get("ask") or "").strip():
+            return speakable(compose(got.get("news"), got.get("ask"), max_words))
+        return plain_fallback(raw, max_words)
+    line = local_summary(prompt, clip(raw))
+    return speakable(line) if line else plain_fallback(raw, max_words)
 
 
 EVENTS = os.path.expanduser("~/.cc-pill/events")
@@ -667,9 +781,9 @@ def main():
     except (TypeError, ValueError):
         max_words = 0
     if ctx is None and speakable_as_is(raw, max_words):
-        line = " ".join(raw.split())   # already a briefing: no Haiku call
+        line = " ".join(raw.split())   # already a briefing: no model call
     else:
-        line = summarize(raw, mode, cfg["summarizer_model"], ctx, max_words, container)
+        line = summarize(raw, mode, ctx, max_words, container)
     if not line or line.strip().upper() == "SKIP":
         print(f"[{time.strftime('%H:%M:%S')}] {mode}: (skipped)", flush=True)
         return

@@ -14,7 +14,7 @@ Whisper). Alfred then:
 
 Only routing needs a model: which of these you want, which session, what
 to send. It runs on the local Gemma server (llama.cpp, started on demand,
-stopped when idle) and falls back to Haiku. The model can only choose;
+stopped when idle); nothing goes to a cloud model. The model can only choose;
 Alfred composes every sentence he says, and nothing is sent without your
 yes. Stdlib only.
 """
@@ -40,7 +40,7 @@ WHISPER_NOISE = re.compile(r"\[[^\]]*\]|\([^)]*\)")
 
 LISTEN_MAX = 20.0          # seconds of recording before Alfred stops listening himself
 PENDING_TTL = 120.0        # a send waits this long for your yes
-LOCAL_WAIT = 3.0           # how long a request waits for a starting local model
+LOCAL_WAIT = 30.0          # how long a request waits for the local model to load
 
 # Kept small: the local model writes about 13 tokens a second.
 ROUTE_SCHEMA = {
@@ -72,6 +72,15 @@ def sentence(text):
     return text if text[-1:] in (".", "?", "!") else text + "."
 
 
+def activity_words(act, clipped_at=44):
+    """A session's activity label, fit to say: the hook clips labels at 44
+    characters, so a label that long ends in half a word; drop it."""
+    act = " ".join((act or "").split()).rstrip(" .;:,")
+    if len(act) >= clipped_at - 1 and " " in act:
+        act = act.rsplit(" ", 1)[0].rstrip(" .;:,")
+    return act
+
+
 def first_json(text):
     """The first JSON object in a model's answer."""
     m = re.search(r"\{.*\}", text or "", re.S)
@@ -97,19 +106,16 @@ def http_json(url, body=None, timeout=10.0):
 
 
 class Router:
-    """One routing decision: the local Gemma server first, Haiku second."""
+    """One routing decision, by the local Gemma server. Its process is this
+    daemon's to start and stop; the voice worker uses it too (/llm/warm)."""
 
-    def __init__(self, url, cmd, claude_bin, fallback_model="haiku", idle=900.0,
-                 http=http_json, popen=subprocess.Popen, run=None, clock=time.time, sleeper=time.sleep,
-                 log_path=None, log=lambda msg: None):
+    def __init__(self, url, cmd, idle=900.0, http=http_json, popen=subprocess.Popen,
+                 clock=time.time, sleeper=time.sleep, log_path=None, log=lambda msg: None):
         self.url = (url or "").rstrip("/")
         self.cmd = cmd
-        self.claude_bin = claude_bin
-        self.fallback_model = fallback_model
         self.idle = idle
         self.http = http
         self.popen = popen
-        self.run = run
         self.clock = clock
         self.sleep = sleeper
         self.log_path = log_path
@@ -191,6 +197,8 @@ class Router:
     def route(self, system, request):
         self.last_used = start = self.clock()
         ready = self.healthy()
+        if not ready:
+            self.warm()                 # not up (stopped as idle, or never summoned): start it
         if not ready and self.proc and self.proc.poll() is None:
             end = self.clock() + LOCAL_WAIT
             while not ready and self.clock() < end:
@@ -204,19 +212,9 @@ class Router:
             if got:
                 self.log(f"alfred: routed by the local model in {self.clock() - start:.1f}s")
                 return got
-        got = self.haiku(system, request)
-        self.log(f"alfred: routed by {self.fallback_model} in {self.clock() - start:.1f}s" if got
-                 else "alfred: no model could route the request")
-        return got
-
-    def haiku(self, system, request):
-        if not self.run or not self.claude_bin:
-            return None
-        prompt = (system + "\n\nThe request: " + request + "\n\nAnswer with only one JSON object with the keys "
-                  '"intent", "n", "text". No other text.')
-        out, code = self.run([self.claude_bin, "-p", "--model", self.fallback_model, "--tools", ""],
-                             input=prompt, timeout=60, stderr=False)
-        return first_json(out) if code == 0 else None
+        self.log("alfred: the local model could not route the request" if ready
+                 else "alfred: no local model to route with")
+        return None
 
 
 class Alfred:
@@ -398,7 +396,8 @@ class Alfred:
                 why = s.get("last_briefing")
                 parts.append(f"{self.label(s, ss, False)} needs you." + (" " + sentence(why) if why else ""))
             elif s["state"] == "working":
-                parts.append(f"{self.label(s, ss, False)} is {s.get('activity') or 'working'}.")
+                act = activity_words(s.get("activity"))
+                parts.append(f"{self.label(s, ss, False)} is working" + (f": {act}." if act else "."))
         if 0 < len(done) <= 2:
             parts += [f"{self.label(s, ss, False)} is done." for s in done]
         elif done:
@@ -408,8 +407,8 @@ class Alfred:
     def detail(self, s, ss):
         state = {"waiting": "needs you", "working": "is working", "done": "is done"}.get(s["state"], s["state"])
         line = f"{self.label(s, ss, False)} {state}"
-        if s["state"] == "working" and s.get("activity"):
-            line += f": {s['activity']}"
+        if s["state"] == "working" and activity_words(s.get("activity")):
+            line += f": {activity_words(s['activity'])}"
         line += "."
         if s.get("last_briefing"):
             line += " Last: " + sentence(s["last_briefing"])
@@ -451,11 +450,15 @@ class Alfred:
         if p and NO.match(text):
             self.pending = None
             return "Cancelled."
+        if not p and len(text.split()) <= 3 and (YES.match(text) or NO.match(text)):
+            return "Nothing is waiting for a yes or no."
         if BRIEF.search(text) or not ss:
             return self.brief(ss)
-        if not self.router:
-            return "I can only give a briefing right now."
-        got = self.router.route(self.system_prompt(ss), text) or {}
+        if not self.router or not self.router.cmd and not self.router.healthy():
+            return "I can only give a briefing: there is no local model for the rest."
+        got = self.router.route(self.system_prompt(ss), text)
+        if got is None:
+            return "The local model didn't answer. Try again in a moment."
         intent = got.get("intent")
         n = got.get("n") if isinstance(got.get("n"), int) else 0
         s = ss[n - 1] if 1 <= n <= len(ss) else None

@@ -19,7 +19,7 @@ VENV_PY = os.path.join(VOICE_DIR, ".venv", "bin", "python")
 
 
 def main():
-    # Guard: never fire for the inner `claude -p` summarizer call, for a
+    # Guard: never fire for a session started with PILL_INNER set, for a
     # continued stop loop, or when the voice is switched off.
     if os.environ.get("PILL_INNER"):
         return

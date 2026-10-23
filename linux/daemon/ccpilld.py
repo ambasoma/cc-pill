@@ -128,7 +128,6 @@ class Config:
                                         os.path.join(ai, "whisper.cpp", "whisper-bin-ubuntu-x64", "whisper-cli"))
         self.alfred_whisper_model = found("alfred_whisper_model", os.path.join(ai, "models", "ggml-base.en.bin"))
         self.alfred_recorder = data.get("alfred_recorder") or shutil.which("pw-record") or shutil.which("arecord") or ""
-        self.alfred_fallback_model = data.get("alfred_fallback_model") or "haiku"
         idle = data.get("alfred_llm_idle_minutes", 15)
         self.alfred_llm_idle = float(idle) * 60 if isinstance(idle, (int, float)) else 900.0
         # The uid Claude Code runs as inside a container, when it isn't root
@@ -185,7 +184,7 @@ def clean_event(evt):
 
 def run(args, timeout=8, input=None, cwd=None, stderr=True):
     """Run a command, returning (stdout+stderr, exit code). Never raises.
-    stderr=False leaves out the command's log lines (Whisper, claude -p).
+    stderr=False leaves out the command's log lines (Whisper).
 
     Under systemd the PATH can be bare: add the usual user bin dirs. Set a
     UTF-8 locale for tmux. Its -F output is split on tabs: tmux 3.5 escapes
@@ -1142,6 +1141,16 @@ def make_handler(store, bridge=False):
             sid = str(body.get("sid") or "")
             text = body.get("text")
             text = text if isinstance(text, str) else ""
+            if route == "/llm/warm":
+                # The voice worker, before a briefing: start the local model,
+                # or keep it from being stopped as idle.
+                r = store.alfred.router if store.alfred else None
+                if r is None or not r.cmd:
+                    self._send(200, {"ok": False})
+                    return
+                threading.Thread(target=r.warm, daemon=True).start()
+                self._send(200, {"ok": True})
+                return
             if route.startswith("/alfred/"):
                 a = store.alfred
                 if a is None:
@@ -1250,8 +1259,8 @@ def main(argv=None):
     store = Store(config)
     import alfred as alfred_mod
     store.alfred = alfred_mod.Alfred(store, config, router=alfred_mod.Router(
-        config.alfred_llm_url, config.alfred_llm_cmd, config.claude_bin, config.alfred_fallback_model,
-        idle=config.alfred_llm_idle, run=run, log_path=os.path.join(HOME, "alfred", "llm.log"), log=log),
+        config.alfred_llm_url, config.alfred_llm_cmd,
+        idle=config.alfred_llm_idle, log_path=os.path.join(HOME, "alfred", "llm.log"), log=log),
         data_dir=os.path.join(HOME, "alfred"))
     log(f"ccpilld starting (pid {os.getpid()}, data {HOME})")
     try:

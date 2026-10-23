@@ -497,6 +497,59 @@ class T3b_Briefings(unittest.TestCase):
         Rig.fire(c, "end", sid)
 
 
+class T3c_LocalBriefing(unittest.TestCase):
+    """The real voice worker, as a finished turn runs it: it asks the daemon
+    to start the local model, waits for it, has it write the line, plays it
+    (through a stand-in player), and never calls claude."""
+
+    def test_worker_briefs_with_the_local_model_only(self):
+        vdir = os.path.expanduser("~/.cc-pill/voice")
+        if not os.path.exists(os.path.join(vdir, ".venv", "bin", "python")):
+            self.skipTest("no voice runtime")
+        if not os.path.exists(os.path.expanduser("~/.local/opt/local-ai/bin/llm-server")):
+            self.skipTest("no local model")
+        home = os.path.join(Rig.scratch, "workerhome")
+        voice = os.path.join(home, "voice")
+        bindir = os.path.join(home, "bin")
+        for d in (voice, bindir, os.path.join(home, ".cc-pill")):
+            os.makedirs(d, exist_ok=True)
+        for f in ("worker.py", "say.py", "prompt-template.txt"):
+            shutil.copy(os.path.join(REPO, "voice", f), voice)
+        for f in (".venv", "models"):
+            os.symlink(os.path.join(vdir, f), os.path.join(voice, f))
+        shutil.copy(os.path.join(vdir, "prompt.txt"), voice)
+        played, called = os.path.join(home, "played.log"), os.path.join(home, "claude-called")
+        for name, body in (("pw-play", f'echo "$@" >> "{played}"'), ("claude", f'touch "{called}"; exit 1')):
+            with open(os.path.join(bindir, name), "w") as f:
+                f.write(f"#!/bin/sh\n{body}\n")
+            os.chmod(os.path.join(bindir, name), 0o755)
+        with open(os.path.join(home, ".cc-pill", "config.json"), "w") as f:
+            json.dump({"daemon_port": PORT, "enabled": True, "voice": "bm_george", "speed": 1.05,
+                       "volume": 0.0, "briefing_gap_seconds": 0}, f)
+        job = os.path.join(home, "job.json")
+        with open(job, "w") as f:
+            json.dump({"pill_mode": "stop", "container": "web-dev", "session_id": f"{TAG}-w", "cwd": "/root/w/api",
+                       "last_assistant_message": "All 212 tests pass after the refactor. "
+                                                 "Want me to open the merge request now?"}, f)
+        env = dict(os.environ, HOME=home, PATH=bindir + ":" + os.environ["PATH"])
+        before = llm_servers()
+        p = subprocess.run([os.path.join(voice, ".venv", "bin", "python"), os.path.join(voice, "worker.py"), job],
+                           env=env, capture_output=True, text=True, timeout=120)
+        out = p.stdout + p.stderr
+        spoken = [l for l in out.splitlines() if "] stop: " in l]
+        self.assertTrue(spoken, out[-1500:])
+        line = spoken[-1].split("] stop: ", 1)[1]
+        print(f"\n    briefing: {line}", file=sys.stderr)
+        self.assertTrue(line.startswith("web dev: "), line)
+        self.assertTrue(line.rstrip().endswith("?"), "the question must be put to the user: " + line)
+        self.assertNotIn("A turn finished", line, "the local model was not used")
+        self.assertTrue(os.path.exists(played), "nothing was played")
+        self.assertFalse(os.path.exists(called), "claude must never be called")
+        # The worker never starts a model itself: a line from the model means
+        # the daemon started it when the worker asked (/llm/warm).
+        self.assertEqual(before, Rig.llm_before)
+
+
 class T4_BridgeSecurity(unittest.TestCase):
     def curl(self, c, path, token, body='{"container":"%s","event":{"type":"start","sid":"evil"}}'):
         url = f"http://{Rig.config['bridge_host']}:{PORT}{path}"
@@ -762,7 +815,9 @@ class T8_Alfred(unittest.TestCase):
                 except Exception:
                     return False
             self.assertTrue(wait_for(up, 60, 0.5), "the daemon did not start the local model")
-            self.assertEqual(llm_servers(), started + 1, "the daemon must start its own server")
+            if started == 0:
+                self.assertEqual(llm_servers(), 1, "the daemon must start its own server")
+            # else: yours is running and serves the test; the daemon leaves it alone
             time.sleep(3)
             before = alfred_state().get("reply")
             api("/alfred/ask", "POST", {"text": f"tell the proj session to print the word {TAG}"})

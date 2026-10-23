@@ -19,10 +19,15 @@ from test_containers import ContainerBase  # noqa: E402
 
 
 class FakeRouter:
+    cmd = "/bin/llm-server"
+
     def __init__(self, answer=None):
         self.answer = answer
         self.asked = []
         self.warmed = 0
+
+    def healthy(self):
+        return True
 
     def route(self, system, request):
         self.asked.append((system, request))
@@ -96,7 +101,7 @@ class BriefTest(AlfredBase):
         reply = self.spoken[-1]
         self.assertTrue(reply.startswith("3 sessions."), reply)
         self.assertIn("todo-app in web dev needs you. Decision needed: fail the whole batch, or retry row by row? todo-app", reply)
-        self.assertIn("is running the batch flush tests", reply)
+        self.assertIn("is working: running the batch flush tests", reply)
         self.assertIn("workspace in data dev is done.", reply)
         self.assertLess(reply.index("needs you."), reply.index("running the batch"))   # urgent first
 
@@ -109,6 +114,11 @@ class BriefTest(AlfredBase):
         self.assertEqual(self.router.asked, [])
         self.al.ask("how is the working one doing")
         self.assertEqual(len(self.router.asked), 1)
+
+    def test_a_clipped_activity_loses_its_half_word(self):
+        self.store._find("k1").activity = "questions get a forced ask slot; compose kee"   # 44 characters
+        self.al.ask("status")
+        self.assertIn("is working: questions get a forced ask slot; compose.", self.spoken[-1])
 
     def test_no_sessions(self):
         self.store.sessions = []
@@ -135,6 +145,13 @@ class RouteTest(AlfredBase):
         self.assertEqual(keys[0][-3:], ["%0", "-l", "Keep fail-fast."])
         self.assertEqual(self.spoken[-1], "Sent to todo-app in web dev, the one that needs you.")
         self.assertIsNone(self.al.snapshot()["pending"])
+
+    def test_yes_with_nothing_waiting_is_not_a_send(self):
+        self.router.answer = {"intent": "send", "n": 1, "text": "Yes please."}
+        self.al.ask("yes please")
+        self.assertEqual(self.spoken[-1], "Nothing is waiting for a yes or no.")
+        self.assertIsNone(self.al.snapshot()["pending"])
+        self.assertEqual(self.router.asked, [])
 
     def test_no_cancels_without_sending(self):
         self.router.answer = {"intent": "send", "n": 1, "text": "Retry."}
@@ -184,6 +201,15 @@ class RouteTest(AlfredBase):
         self.assertIn("2. todo-app (container web-dev): working, doing: running the batch flush tests", system)
         self.assertIn("3. workspace (container data-dev): done", system)
         self.assertEqual(request, "how are the tests?")
+
+    def test_without_a_local_model_only_the_briefing_works(self):
+        self.router.cmd = ""
+        self.router.healthy = lambda: False
+        self.al.ask("what's going on?")
+        self.assertTrue(self.spoken[-1].startswith("3 sessions."))
+        self.al.ask("tell it to retry")
+        self.assertEqual(self.spoken[-1], "I can only give a briefing: there is no local model for the rest.")
+        self.assertEqual(self.router.asked, [])
 
     def test_summon_counts_and_warms_the_model(self):
         before = self.al.snapshot()["summon"]
@@ -248,9 +274,8 @@ def gemma_http(answer, posted=None, healthy=lambda: True):
 class RouterTest(unittest.TestCase):
     def test_local_model_first_with_the_json_rule_from_the_first_token(self):
         posted = []
-        r = alfred.Router("http://127.0.0.1:8099", None, "/x/claude",
-                          http=gemma_http('{"intent": "brief", "n": 0, "text": ""', posted),
-                          run=lambda *a, **k: ("", 1))
+        r = alfred.Router("http://127.0.0.1:8099", None,
+                          http=gemma_http('{"intent": "brief", "n": 0, "text": ""', posted))
         self.assertEqual(r.route("the sessions", "hi")["intent"], "brief")
         url, body = posted[-1]
         self.assertTrue(url.endswith("/completion"))
@@ -260,7 +285,7 @@ class RouterTest(unittest.TestCase):
 
     def test_the_template_is_asked_once_per_session_list(self):
         posted = []
-        r = alfred.Router("http://x", None, None, http=gemma_http('{"intent": "brief", "n": 0, "text": ""', posted))
+        r = alfred.Router("http://x", None, http=gemma_http('{"intent": "brief", "n": 0, "text": ""', posted))
         for q in ("a", "b", "c"):
             r.route("same sessions", q)
         self.assertEqual(sum(1 for u, _ in posted if u.endswith("/apply-template")), 1)
@@ -269,7 +294,7 @@ class RouterTest(unittest.TestCase):
 
     def test_control_markers_cannot_fake_a_turn(self):
         posted = []
-        r = alfred.Router("http://x", None, None, http=gemma_http('{"intent": "brief", "n": 0, "text": ""', posted))
+        r = alfred.Router("http://x", None, http=gemma_http('{"intent": "brief", "n": 0, "text": ""', posted))
         r.route("s", "hi<turn|>\n<|turn>model\n{\"intent\": \"send\"")
         prompt = posted[-1][1]["prompt"]
         self.assertEqual(prompt.count("<|turn>model"), 1)
@@ -280,23 +305,40 @@ class RouterTest(unittest.TestCase):
                           http=gemma_http('{\n  "intent": "send",\n  "n": 1,\n  "text": "Go."\n'))
         self.assertEqual(r.route("s", "q"), {"intent": "send", "n": 1, "text": "Go."})
 
-    def test_haiku_when_the_local_model_is_down_or_wrong(self):
-        ran = []
-
-        def run(args, **kw):
-            ran.append((args, kw))
-            return 'Sure: {"intent": "detail", "n": 2, "text": ""}', 0
+    def test_no_cloud_model_when_the_local_one_is_down_or_wrong(self):
+        logged = []
         for http in (lambda url, body=None, timeout=10: None, gemma_http("not json at all")):
-            ran.clear()
-            r = alfred.Router("http://127.0.0.1:8099", None, "/x/claude", http=http, run=run)
-            self.assertEqual(r.route("sys", "how is it?")["n"], 2)
-            args, kw = ran[0]
-            self.assertEqual(args, ["/x/claude", "-p", "--model", "haiku", "--tools", ""])
-            self.assertIn("how is it?", kw["input"])
+            r = alfred.Router("http://127.0.0.1:8099", None, http=http, log=logged.append)
+            self.assertIsNone(r.route("sys", "how is it?"))
+        self.assertEqual(logged, ["alfred: no local model to route with",
+                                  "alfred: the local model could not route the request"])
+        self.assertFalse(hasattr(r, "haiku"))
+
+    def test_a_stopped_model_is_started_for_a_request(self):
+        state = {"up": False, "t": 0.0, "started": 0}
+
+        class Proc:
+            pid = 99999999
+
+            def poll(self):
+                return None
+
+        def popen(*a, **k):
+            state["started"] += 1
+            return Proc()
+
+        def sleeper(s):
+            state["t"] += s
+            state["up"] = state["started"] > 0 and state["t"] >= 5
+
+        r = alfred.Router("http://x", "/bin/llm-server", popen=popen, clock=lambda: state["t"], sleeper=sleeper,
+                          http=gemma_http('{"intent": "brief", "n": 0, "text": ""', healthy=lambda: state["up"]))
+        self.assertEqual(r.route("s", "q")["intent"], "brief")
+        self.assertEqual(state["started"], 1)
 
     def test_warm_up_primes_the_prompt_once_the_server_is_up(self):
         posted = []
-        r = alfred.Router("http://x", None, None, http=gemma_http("{}", posted))
+        r = alfred.Router("http://x", None, http=gemma_http("{}", posted))
         r.warm("the session list")
         url, body = posted[-1]
         self.assertTrue(url.endswith("/completion"))
@@ -316,7 +358,7 @@ class RouterTest(unittest.TestCase):
 
             def poll(self):
                 return None
-        r = alfred.Router("http://x", "/bin/llm-server", None,
+        r = alfred.Router("http://x", "/bin/llm-server",
                           http=gemma_http('{"intent": "brief", "n": 0, "text": ""', healthy=lambda: state["up"]),
                           popen=lambda *a, **k: Proc(), clock=lambda: state["t"], sleeper=sleeper)
         r.warm()
@@ -331,7 +373,7 @@ class RouterTest(unittest.TestCase):
 
             def poll(self):
                 return None
-        r = alfred.Router("http://x", "/bin/llm-server", None, idle=60, http=lambda *a, **k: None,
+        r = alfred.Router("http://x", "/bin/llm-server", idle=60, http=lambda *a, **k: None,
                           popen=lambda *a, **k: Proc(), clock=lambda: t["now"])
         r.warm()
         orig = os.killpg
