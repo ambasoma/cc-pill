@@ -67,6 +67,7 @@ REAP_INTERVAL = 10.0
 BRIEF_WINDOW = 15.0
 BRIEF_QUEUE_MAX = 4
 ADDRS_TTL = 300.0
+PID_RETRY = 30.0     # seconds between lookups of a container pid that wasn't found
 
 # Claude Code 2.x pre-starts "spare" processes for background sessions, in
 # /tmp/cc-daemon-<uid>/<id>/spare, and moves one to its project when it is
@@ -346,6 +347,7 @@ class Store:
         self._local_addrs_at = clock() if local_addrs else 0.0
         self._brief_last = {}             # (sid, mode) -> when a job was last queued
         self._pid_cache = {}              # (container, container pid) -> host pid
+        self._pid_miss = {}               # (container, container pid) -> when a lookup last failed
         self.lock = threading.RLock()
 
         self.sessions = []
@@ -444,9 +446,16 @@ class Store:
             key = (container, evt["pid"])
             hp = self._pid_cache.get(key)
             if not hp or not self.alive(hp):
-                hp = self.host_pid(container, evt["pid"])
-                if hp:
-                    self._pid_cache[key] = hp
+                hp = 0
+                # A failed lookup scans all of /proc: don't repeat it on every
+                # event of the session, only now and then.
+                if self.clock() - self._pid_miss.get(key, -PID_RETRY) >= PID_RETRY:
+                    hp = self.host_pid(container, evt["pid"])
+                    if hp:
+                        self._pid_cache[key] = hp
+                        self._pid_miss.pop(key, None)
+                    else:
+                        self._pid_miss[key] = self.clock()
             evt["pid"] = hp or 0
         client = evt.pop("ssh_client")
         evt["remote"] = bool(client) and client not in self.local_addresses()

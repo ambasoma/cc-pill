@@ -70,6 +70,16 @@ class ApplyContainerTest(ContainerBase):
         self.store.apply_container("web-dev", evt("prompt", pid=3535))
         self.assertEqual(self.store.sessions[0].pid, 22000)
 
+    def test_a_failed_lookup_is_not_repeated_on_every_event(self):
+        for typ in ("start", "prompt", "tool", "stop"):
+            self.store.apply_container("web-dev", evt(typ, pid=777, label="x"))
+        self.assertEqual(self.lookups, [("web-dev", 777)])
+        self.clock.advance(ccpilld.PID_RETRY)
+        self.pidmap[("web-dev", 777)] = 5555          # the process shows up later
+        self.store.apply_container("web-dev", evt("prompt", pid=777))
+        self.assertEqual(self.store.sessions[0].pid, 5555)
+        self.assertEqual(len(self.lookups), 2)
+
     def test_unresolved_pid_is_never_reaped(self):
         # The container's pid number means nothing on the host: never use it raw.
         self.store.apply_container("web-dev", evt("start", pid=999))
@@ -393,6 +403,53 @@ class HookPostTest(unittest.TestCase):
         hook.post_to_host({"type": "start"}, {"url": f"http://127.0.0.1:{port}", "token": ""})
         hook.post_to_host({"type": "start"}, {"url": "garbage", "token": ""})
         self.assertLess(time.time() - t, 0.5)
+
+
+class WiredUserTest(unittest.TestCase):
+    """A re-run without --user (setup.sh update does that) keeps the user a
+    container was wired for, instead of rewiring it as root."""
+
+    def run_cli(self, *args):
+        calls = []
+
+        def fake_sh(container, script, input=None, check=True):
+            calls.append(script)
+            out = ""
+            if script.startswith("getent passwd"):
+                who = script.split()[2].strip("'")
+                out = {"dev": "/home/dev\n", "1000": "/home/dev\n", "root": "/root\n"}.get(who, "")
+            elif script.startswith("id -u"):
+                out = "1000\n" if "1000" in script or "dev" in script else "0\n"
+            elif script.startswith("ip -4 route"):
+                out = "default via 192.0.2.1 dev eth0\n"
+            elif script.startswith("cat "):
+                out = "{}"
+            return mock.Mock(stdout=out, returncode=0)
+        with mock.patch.object(wire, "sh", fake_sh), \
+                mock.patch.object(wire, "lxc", lambda *a, **k: mock.Mock(returncode=0, stdout="web-dev,RUNNING\n")), \
+                mock.patch.object(wire.ccpilld, "host_addresses", lambda *a: {"192.0.2.1"}), \
+                mock.patch.object(wire, "check_reach", lambda *a: None), \
+                mock.patch.object(wire, "CONFIG", self.cfg), mock.patch.object(wire, "DATA", self.tmp):
+            wire.main(list(args) + ["--no-restart"])
+        return calls
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.cfg = os.path.join(self.tmp, "config.json")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def test_rerun_keeps_the_wired_user(self):
+        self.run_cli("add", "web-dev", "--user", "dev")
+        with open(self.cfg) as f:
+            self.assertEqual(json.load(f)["container_users"], {"web-dev": 1000})
+        calls = self.run_cli("add", "web-dev")                 # what setup.sh update runs
+        self.assertTrue(any("/home/dev/.cc-pill" in c for c in calls), calls)
+        self.assertFalse(any("/root/.cc-pill" in c for c in calls), "rewired as root")
+        with open(self.cfg) as f:
+            self.assertEqual(json.load(f)["container_users"], {"web-dev": 1000})
+        self.assertEqual(oct(os.stat(self.cfg).st_mode & 0o777), "0o600")
 
 
 class MergeHooksTest(unittest.TestCase):

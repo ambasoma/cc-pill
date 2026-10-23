@@ -171,7 +171,8 @@ if os.path.exists(p):
 hooks = cfg.setdefault("hooks", {})
 pill = install + "/hooks/hook.py"
 voice = vdir + "/hook.py"
-def cmd(script, mode): return {"type": "command", "command": f'python3 "{script}" {mode}', "timeout": 15}
+# 5 s, like the container hooks (cc-pill-containers): both return in milliseconds
+def cmd(script, mode): return {"type": "command", "command": f'python3 "{script}" {mode}', "timeout": 5}
 ours = {
     "SessionStart": [cmd(pill, "start")],
     "UserPromptSubmit": [cmd(pill, "prompt")],

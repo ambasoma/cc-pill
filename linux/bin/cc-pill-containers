@@ -97,6 +97,9 @@ def merge_hooks(settings, command_for):
     hooks = settings.setdefault("hooks", {})
     for event, mode in EVENTS.items():
         groups = hooks.setdefault(event, [])
+        # 5 s, like setup.sh's host hooks. The two recognize their own hooks
+        # differently on purpose: inside a container ours is always
+        # ~/.cc-pill/hook.py (MARK); on the host it lives in the install.
         groups.append({"hooks": [{"type": "command", "command": command_for(mode), "timeout": 5}]})
     return settings
 
@@ -169,7 +172,7 @@ def add(container, user, cfg, port, home=None):
     # Not root: the daemon runs tmux as this uid, to reach this user's sessions.
     users = cfg.setdefault("container_users", {})
     uid = sh(container, f"id -u {shlex.quote(user)}").stdout.strip()
-    if user != "root" and uid.isdigit():
+    if user not in ("root", "0") and uid.isdigit() and uid != "0":
         users[container] = int(uid)
     else:
         users.pop(container, None)
@@ -248,12 +251,19 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("action", choices=("add", "remove", "status"))
     ap.add_argument("containers", nargs="*")
-    ap.add_argument("--user", default="root", help="the user Claude Code runs as inside (default root)")
+    ap.add_argument("--user", help="the user Claude Code runs as inside (default: the one it was wired "
+                                   "for, or root)")
     ap.add_argument("--home", help="wire this directory instead of the user's home (tests)")
     ap.add_argument("--no-restart", action="store_true")
     a = ap.parse_args(argv)
     cfg = load_config()
     port = ccpilld.Config(cfg).port
+
+    def user_for(c):
+        """--user, else the uid this container was wired for (a re-run from
+        `setup.sh update` must not rewire it as root), else root."""
+        uid = (cfg.get("container_users") or {}).get(c)
+        return a.user or (str(uid) if isinstance(uid, int) else "root")
 
     if a.action == "status":
         print(f"bridge: {cfg.get('bridge_host') or '(none)'}:{port}")
@@ -261,16 +271,18 @@ def main(argv=None):
             if not running(c):
                 print(f"  {c}: not running")
                 continue
-            wired = sh(c, f"test -e ~{a.user}/.cc-pill/remote.json", check=False).returncode == 0
+            home = sh(c, f"getent passwd {shlex.quote(user_for(c))} | cut -d: -f6", check=False).stdout.strip()
+            wired = bool(home) and sh(c, f"test -e {shlex.quote(home)}/.cc-pill/remote.json",
+                                      check=False).returncode == 0
             print(f"  {c}: {'wired' if wired else 'in the config, but not wired inside'}")
         return 0
     if not a.containers:
         die("name at least one container")
     for c in a.containers:
         if a.action == "add":
-            add(c, a.user, cfg, port, a.home)
+            add(c, user_for(c), cfg, port, a.home)
         else:
-            remove(c, a.user, cfg, a.home)
+            remove(c, user_for(c), cfg, a.home)
         # After each one: a later container failing must not leave this one
         # wired with a token the host never saved.
         save_config(cfg)

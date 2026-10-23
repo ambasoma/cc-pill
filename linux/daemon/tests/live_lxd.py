@@ -184,6 +184,7 @@ class Rig:
         if not cls.containers:
             raise unittest.SkipTest("no running containers with /root/.claude")
         cls.before = fingerprint(cls.containers)
+        cls.llm_before = llm_servers()
         cls.scratch = tempfile.mkdtemp(prefix="ccpill-itest-")
         data = os.path.join(cls.scratch, "data")
         os.makedirs(data)
@@ -726,7 +727,6 @@ class T8_Alfred(unittest.TestCase):
     def setUpClass(cls):
         idle = [c for c in Rig.containers if not sh(c, "tmux ls 2>/dev/null || true").strip()]
         cls.c = idle[0] if idle else None
-        cls.servers_before = llm_servers()
 
     def test_1_brief(self):
         c = Rig.containers[0]
@@ -751,7 +751,19 @@ class T8_Alfred(unittest.TestCase):
         try:
             Rig.fire(c, "start", sid, cwd=cwd)
             self.assertIsNotNone(wait_for(lambda: session(sid)))
+            started = llm_servers()
             api("/alfred/summon", "POST", {})          # warms the local model, like the hotkey
+            # You type or talk while it loads: wait for the daemon's own
+            # server to answer, then for the warm-up to have run.
+            def up():
+                try:
+                    urllib.request.urlopen("http://127.0.0.1:8099/health", timeout=1).close()
+                    return True
+                except Exception:
+                    return False
+            self.assertTrue(wait_for(up, 60, 0.5), "the daemon did not start the local model")
+            self.assertEqual(llm_servers(), started + 1, "the daemon must start its own server")
+            time.sleep(3)
             before = alfred_state().get("reply")
             api("/alfred/ask", "POST", {"text": f"tell the proj session to print the word {TAG}"})
             reply = alfred_says(before, 90)
@@ -805,8 +817,7 @@ class T9_NoTrace(unittest.TestCase):
         Rig.down()
         Rig.unit = None
         time.sleep(1.0)
-        self.assertEqual(llm_servers(), T8_Alfred.__dict__.get("servers_before", 0),
-                         "the daemon must stop the model server it started")
+        self.assertEqual(llm_servers(), Rig.llm_before, "the daemon must stop the model server it started")
         after = fingerprint(Rig.containers)
         diff = {k: (Rig.before[k], after[k]) for k in Rig.before if Rig.before[k] != after[k]}
         self.assertEqual(diff, {})
