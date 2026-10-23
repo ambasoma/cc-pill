@@ -84,7 +84,7 @@ class Base(unittest.TestCase):
         self.spawner = FakeSpawner()
         self.dead = set()
         self.config = ccpilld.Config({"speaker": self.speaker, "name": "Nova",
-                                      "home_repo": os.path.join(self.tmp, "work"), "claude_bin": "/x/claude"})
+                                      })
         self.store = ccpilld.Store(self.config, clock=self.clock, runner=self.runner,
                                    spawner=self.spawner, alive=lambda pid: pid not in self.dead,
                                    rng=lambda: 0.1, sleeper=lambda s: None,
@@ -101,29 +101,6 @@ class Base(unittest.TestCase):
                 return f.read()
         except OSError:
             return ""
-
-    def tmux_server(self, taken=()):
-        """Fake tmux: has-session answers from a set of existing names that
-        new-session adds to, like the real thing."""
-        existing = set(taken)
-
-        def has(args):
-            return ("", 0) if args[3].lstrip("=") in existing else ("", 1)
-
-        def new(args):
-            existing.add(args[4])
-            return "", 0
-        orig = self.runner.__call__
-
-        def call(args, timeout=8):
-            if args[:2] == ["tmux", "has-session"]:
-                self.runner.calls.append(list(args))
-                return has(args)
-            if args[:2] == ["tmux", "new-session"]:
-                self.runner.calls.append(list(args))
-                return new(args)
-            return orig(args, timeout)
-        self.store.run = call
 
     def enable_voice(self):
         os.makedirs(os.path.join(self.speaker, ".venv", "bin"))
@@ -390,23 +367,6 @@ class ReapAndGcTest(Base):
         self.store.tick()
         self.assertEqual(len(self.store.sessions), 1)
 
-    def test_gc_kills_only_idle_detached_pill_sessions(self):
-        self.runner.rules.append((("tmux", "list-panes"), (
-            "cc-work-pill\t0\t100\ncc-work-pill-2\t1\t200\ncc-work\t0\t300\n", 0)))
-        for pid in (100, 200, 300):
-            self.store.apply(evt("stop", sid=f"s{pid}", pid=pid))
-        self.clock.advance(self.config.pill_gc_minutes * 60 + ccpilld.REAP_INTERVAL + 1)
-        self.store.tick()
-        kills = self.runner.called("tmux", "kill-session")
-        self.assertEqual(kills, [["tmux", "kill-session", "-t", "cc-work-pill"]])
-
-    def test_gc_disabled_with_zero_window(self):
-        self.config.pill_gc_minutes = 0
-        self.store.apply(evt("stop", pid=100))
-        self.clock.advance(10 ** 6)
-        self.store.tick()
-        self.assertEqual(self.runner.called("tmux", "list-panes"), [])
-
     def test_adopt_existing(self):
         self.runner.rules.append((("tmux", "list-panes"), (
             "cc-demo\t900\t/home/u/demo\tclaude\n"
@@ -469,19 +429,16 @@ class ConfigTest(unittest.TestCase):
     def test_defaults(self):
         c = ccpilld.Config({})
         self.assertEqual(c.name, "Jarvis")
-        self.assertEqual(c.permission_mode, "acceptEdits")
         self.assertEqual(c.port, ccpilld.DEFAULT_PORT)
-        self.assertEqual(c.pill_gc_minutes, 30.0)
         self.assertTrue(c.speaker.endswith("/voice"))
 
     def test_values_and_validation(self):
-        c = ccpilld.Config({"daemon_port": 80, "pill_gc_minutes": "x", "name": "", "speaker": "~/v"})
+        c = ccpilld.Config({"daemon_port": 80, "name": "", "speaker": "~/v"})
         self.assertEqual(c.port, ccpilld.DEFAULT_PORT)
-        self.assertEqual(c.pill_gc_minutes, 30.0)
         self.assertEqual(c.name, "Jarvis")
         self.assertEqual(c.speaker, os.path.expanduser("~/v"))
-        c = ccpilld.Config({"daemon_port": 20000, "pill_gc_minutes": 0})
-        self.assertEqual((c.port, c.pill_gc_minutes), (20000, 0.0))
+        c = ccpilld.Config({"daemon_port": 20000})
+        self.assertEqual(c.port, 20000)
 
     def test_load_missing_or_broken_file(self):
         tmp = tempfile.mkdtemp()
@@ -536,40 +493,6 @@ class ActionsTest(Base):
         self.assertFalse(self.store.toggle_mute())
         self.assertFalse(self.store.voice_muted())
 
-    def test_launch_session_accept_edits(self):
-        self.tmux_server()
-        self.runner.rules.append((("tmux", "capture-pane"), ("│ > │\n? for shortcuts\n", 0)))
-        self.runner.rules.append((("tmux", "send-keys"), ("", 0)))
-        self.assertTrue(self.store.launch_session("  tidy the readme "))
-        new = self.runner.called("tmux", "new-session")[0]
-        self.assertEqual(new[:7], ["tmux", "new-session", "-d", "-s", "cc-work-pill", "-c", self.config.home_repo])
-        self.assertEqual(new[7:], ["/x/claude", "--permission-mode", "acceptEdits"])
-        keys = self.runner.called("tmux", "send-keys")
-        self.assertEqual(keys[0], ["tmux", "send-keys", "-t", "cc-work-pill", "-l", "tidy the readme"])
-        self.assertEqual(keys[1][-1], "Enter")
-        self.assertIn("launched cc-work-pill ready=True sent=True", self.log_text())
-
-    def test_launch_session_bypass_accepts_dialog_and_picks_free_name(self):
-        self.config.permission_mode = "bypass"
-        self.config.pill_system_prompt = "Be terse."
-        self.tmux_server(taken={"cc-work-pill"})    # first name taken
-        captures = iter(["Yes, I accept\n", "shift+tab to cycle\n"])
-        self.runner.rules.append((("tmux", "capture-pane"), lambda: (next(captures), 0)))
-        self.runner.rules.append((("tmux", "send-keys"), ("", 0)))
-        self.assertTrue(self.store.launch_session("go"))
-        new = self.runner.called("tmux", "new-session")[0]
-        self.assertEqual(new[4], "cc-work-pill-2")
-        self.assertEqual(new[7:], ["/x/claude", "--dangerously-skip-permissions",
-                                   "--append-system-prompt", "Be terse."])
-        keys = self.runner.called("tmux", "send-keys")
-        self.assertEqual(keys[0][-1], "2")           # answered the acceptance dialog
-        self.assertEqual(keys[2][-2:], ["-l", "go"])
-
-    def test_launch_empty_prompt_dropped(self):
-        self.assertFalse(self.store.launch_session("   "))
-        self.assertEqual(self.runner.calls, [])
-
-
 class HttpTest(Base):
     def setUp(self):
         super().setUp()
@@ -607,7 +530,7 @@ class HttpTest(Base):
     def test_origin_rejected_even_with_header(self):
         code, _ = self.req("/state", headers={ccpilld.API_HEADER: "1", "Origin": "http://evil.example"})
         self.assertEqual(code, 403)
-        code, _ = self.req("/ask", method="POST", body={"text": "rm -rf"},
+        code, _ = self.req("/prompt", method="POST", body={"sid": "s1", "text": "rm -rf"},
                            headers={ccpilld.API_HEADER: "1", "Origin": "null"})
         self.assertEqual(code, 403)
         self.assertEqual(self.runner.calls, [])
@@ -656,21 +579,6 @@ class HttpTest(Base):
         self.assertEqual(self.req("/place", method="POST", body={"edge": "middle", "align": "end"})[1]["ok"], False)
         self.assertEqual(self.req("/place", method="POST", body={"edge": "top", "align": "sideways"})[1]["ok"], False)
         self.assertEqual(len(self.spawner.calls), 1)
-
-    def test_ask_route_launches_in_background(self):
-        done = threading.Event()
-        self.tmux_server()
-        self.runner.rules.append((("tmux", "capture-pane"), ("? for shortcuts", 0)))
-
-        def sent():
-            done.set()
-            return "", 0
-        self.runner.rules.append((("tmux", "send-keys"), sent))
-        code, obj = self.req("/ask", method="POST", body={"text": "hello"})
-        self.assertEqual((code, obj["ok"]), (200, True))
-        self.assertTrue(done.wait(5))
-        self.assertEqual(self.req("/ask", method="POST", body={"text": ""})[1]["ok"], False)
-
 
 class PidAliveTest(unittest.TestCase):
     def test_self_alive_and_bogus_dead(self):

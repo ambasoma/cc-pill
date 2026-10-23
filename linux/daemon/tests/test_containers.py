@@ -175,12 +175,6 @@ class ContainerActionsTest(ContainerBase):
         self.store.apply_container("web-dev", evt("start", sid="nopid", pid=0, cwd="/root/workspace/todo-app"))
         self.assertEqual(self.target_of_prompt("nopid"), "%0")
 
-    def test_container_sessions_are_never_gc_candidates(self):
-        self.config.pill_gc_minutes = 1
-        self.clock.advance(120)
-        self.store._gc_pill_sessions(self.clock())
-        self.assertEqual(self.runner.calls, [])
-
 
 class BridgeHttpTest(ContainerBase):
     def setUp(self):

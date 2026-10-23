@@ -12,3 +12,6 @@ voice/prompt.txt
 .DS_Store
 __pycache__/
 *.pyc
+
+# agent worktrees (Claude Code)
+.claude/worktrees/

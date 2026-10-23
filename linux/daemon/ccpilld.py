@@ -10,11 +10,10 @@ What it does, one for one with app/Sources/Pill/Model.swift:
   * watches ~/.cc-pill/events/ for the JSON events written by hooks/hook.py
     and the voice worker, applies them, deletes them
   * tracks every Claude Code session (working / waiting / done), narrates
-    what the newest working session is doing, reaps dead sessions, garbage
-    collects idle pill-launched tmux sessions
+    what the newest working session is doing, reaps dead sessions
   * runs the briefing bloom and the critter moments on the same timings
   * performs the card's actions: replay briefing, send a prompt to a
-    session, launch a hands-free session, mute, stop speech
+    session, mute, stop speech
   * optionally takes events from Claude Code sessions inside LXD containers,
     posted by the same hook over the LXD bridge (see "containers" below)
   * runs Alfred, the assistant behind the hotkey (alfred.py)
@@ -97,13 +96,7 @@ class Config:
         data = data or {}
         self.name = data.get("name") or "Jarvis"
         self.speaker = os.path.expanduser(data.get("speaker") or os.path.join(INSTALL_DIR, "voice"))
-        self.home_repo = os.path.expanduser(data.get("home_repo") or os.path.expanduser("~"))
-        self.pill_system_prompt = data.get("pill_system_prompt") or ""
-        self.permission_mode = data.get("permission_mode") or "acceptEdits"
         self.hotkey = data.get("hotkey") or "meta+alt+m"
-        self.claude_bin = data.get("claude_bin") or find_claude()
-        gc = data.get("pill_gc_minutes", 30)
-        self.pill_gc_minutes = float(gc) if isinstance(gc, (int, float)) else 30.0
         port = data.get("daemon_port", DEFAULT_PORT)
         self.port = int(port) if isinstance(port, int) and 1024 <= port <= 65535 else DEFAULT_PORT
         # LXD containers: the host's bridge address the containers post to,
@@ -147,12 +140,6 @@ class Config:
             data = {}
         return cls(data)
 
-
-def find_claude():
-    for p in (os.path.expanduser("~/.local/bin/claude"), "/usr/local/bin/claude", "/usr/bin/claude"):
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            return p
-    return shutil.which("claude") or "claude"
 
 
 # -------------------------------------------------------------- processes
@@ -708,28 +695,6 @@ class Store:
         if self.briefing and now - self.briefing["started"] > self.briefing["duration"] + 10:
             self.briefing = None
             self._briefing_clear_at = None
-        self._gc_pill_sessions(now)
-
-    def _gc_pill_sessions(self, now):
-        """Pill-launched tmux sessions that finished and sat idle get cleaned
-        up: done, detached, and untouched past the configured window. Only
-        names containing "-pill" are ever touched."""
-        window = self.config.pill_gc_minutes * 60
-        if window <= 0:
-            return
-        stale = {s.pid for s in self.sessions
-                 if s.state == "done" and not s.container and now - s.since > window}
-        if not stale:
-            return
-        out, _ = self.run(["tmux", "list-panes", "-a", "-F",
-                           "#{session_name}\t#{session_attached}\t#{pane_pid}"])
-        for line in out.splitlines():
-            p = line.split("\t")
-            if len(p) != 3 or "-pill" not in p[0] or p[1] != "0" or not p[2].isdigit():
-                continue
-            if int(p[2]) in stale:
-                self.run(["tmux", "kill-session", "-t", p[0]])
-                log(f"gc: killed idle pill session {p[0]}")
 
     def restore(self, path=STATE_PATH):
         """A restart (an update, a config change) must not forget the sessions
@@ -969,66 +934,6 @@ class Store:
             self.flash(f"Sent to {s.repo}")
         return ok
 
-    def launch_session(self, prompt, wait=True):
-        """Start a fresh Claude session in the home repo, detached in tmux,
-        and deliver the prompt once the TUI is ready. Hooks then track it, the
-        pill narrates it, the voice briefs it."""
-        prompt = (prompt or "").strip()
-        if not prompt:
-            log("ask: empty, dropped")
-            return False
-        self.flash(f"Starting: {prompt[:34]}…")
-        t = threading.Thread(target=self._launch, args=(prompt,), daemon=True)
-        t.start()
-        if wait:
-            t.join()
-        return True
-
-    def _launch(self, prompt):
-        cfg = self.config
-        repo_name = os.path.basename(cfg.home_repo.rstrip("/")) or "home"
-        name = f"cc-{repo_name}-pill"
-        n = 2
-        while self.run(["tmux", "has-session", "-t", f"={name}"])[1] == 0:
-            name = f"cc-{repo_name}-pill-{n}"
-            n += 1
-        cmd = [cfg.claude_bin]
-        if cfg.permission_mode == "bypass":
-            cmd.append("--dangerously-skip-permissions")
-        elif cfg.permission_mode == "default":
-            pass
-        else:
-            cmd += ["--permission-mode", "acceptEdits"]
-        if cfg.pill_system_prompt:
-            cmd += ["--append-system-prompt", cfg.pill_system_prompt]
-        out, code = self.run(["tmux", "new-session", "-d", "-s", name, "-c", cfg.home_repo] + cmd)
-        if code != 0:
-            self.flash("Couldn't start the session")
-            log(f"launch FAILED: {out[:120]}")
-            return
-        # Wait for the input box before typing into it. Bypass mode shows an
-        # acceptance dialog first: answer it, then wait for the ready screen.
-        ready = False
-        accepted = False
-        for _ in range(40):   # up to 20 s
-            self.sleep(0.5)
-            if self.run(["tmux", "has-session", "-t", f"={name}"])[1] != 0:
-                break
-            pane, _ = self.run(["tmux", "capture-pane", "-t", name, "-p"])
-            if not accepted and "Yes, I accept" in pane:
-                self.run(["tmux", "send-keys", "-t", name, "2"])
-                self.sleep(0.3)
-                self.run(["tmux", "send-keys", "-t", name, "Enter"])
-                accepted = True
-                continue
-            if "shift+tab to cycle" in pane or "? for shortcuts" in pane:
-                ready = True
-                break
-        self.sleep(0.6)
-        _, a = self.run(["tmux", "send-keys", "-t", name, "-l", prompt])
-        _, b = self.run(["tmux", "send-keys", "-t", name, "Enter"])
-        log(f"launched {name} ready={ready} sent={a == 0 and b == 0}: {prompt[:60]}")
-
 
 # -------------------------------------------------------------- event drain
 
@@ -1170,8 +1075,6 @@ def make_handler(store, bridge=False):
                 else:
                     self._send(404, {"error": "not found"})
                     return
-            elif route == "/ask":
-                ok = store.launch_session(text, wait=False)
             elif route == "/recap":
                 ok = store.recap(sid)
             elif route == "/prompt":

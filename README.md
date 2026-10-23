@@ -95,7 +95,7 @@ cd cc-pill
 ./linux/setup.sh
 ```
 
-Setup is a [gum](https://github.com/charmbracelet/gum) powered interactive TUI (with a plain prompt fallback). It asks where to install, the hotkey that opens Alfred, how hands-free sessions started through the API should be (auto-accept edits by default), whether you want the voice, and where on which panel the pill should live. Saying yes to the voice adds the voice picker (with live previews), your assistant's name, and its personality (presets, or your own text).
+Setup is a [gum](https://github.com/charmbracelet/gum) powered interactive TUI (with a plain prompt fallback). It asks where to install, the hotkey that opens Alfred whether you want the voice, and where on which panel the pill should live. Saying yes to the voice adds the voice picker (with live previews), your assistant's name, and its personality (presets, or your own text).
 
 It then installs the daemon as a systemd user service (starts at login, auto-restarts), installs the widget, places it on the panel you chose, registers the Claude Code hooks globally and the KDE global shortcut, and optionally adds a tmux wrapper for your interactive sessions so the pill can talk to them.
 
@@ -252,7 +252,6 @@ Localhost only. Every request must carry the header `X-CC-Pill: 1`, and any requ
 | Route | Body | Does |
 | --- | --- | --- |
 | `GET /state` | | The whole renderer state: `pill`, `sessions`, `briefing`, `moment`, `voice`, `toast`, daemon clock `t` |
-| `POST /ask` | `{"text"}` | Start a hands-free session in `home_repo` with the prompt |
 | `POST /llm/warm` | | Start the local model, or keep it from being stopped as idle (the voice worker, before a briefing) |
 | `POST /alfred/summon` | | Open the card on Alfred's box (the hotkey); warms the local model |
 | `POST /alfred/ask` | `{"text"}` | Ask Alfred; his reply and any send to confirm show in `state.alfred` |
@@ -282,8 +281,6 @@ Setup writes this for you; edit and restart the daemon (`systemctl --user restar
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `name` | `"Jarvis"` | Your assistant's name (spoken, shown in the card, shell alias). |
-| `home_repo` | your home | Directory hands-free sessions started through `POST /ask` start in. |
-| `permission_mode` | `"acceptEdits"` | How pill-launched sessions run: `acceptEdits` (file edits auto-approved), `bypass` (fully hands-free), `default` (normal prompting). |
 | `daemon_port` | `17357` | Port the daemon binds on 127.0.0.1. Change the widget's port in its settings to match. |
 | `hotkey` | `"meta+alt+m"` | The shortcut that opens Alfred (written to KDE global shortcuts by setup). |
 | `alfred_llm_cmd` | local-ai's `llm-server` | Command that starts the local model server for briefings and Alfred (`""`: no local model). |
@@ -291,14 +288,11 @@ Setup writes this for you; edit and restart the daemon (`systemctl --user restar
 | `alfred_llm_idle_minutes` | `15` | Stop the local model after this long unused (it holds about 3 GB of shared GPU memory). |
 | `alfred_whisper_cli`, `alfred_whisper_model` | local-ai's whisper.cpp, `ggml-base.en.bin` | Speech to text for hold-to-talk (no Whisper: no mic button). |
 | `alfred_recorder` | `pw-record` | Records while you hold Space (`arecord` works too). |
-| `pill_gc_minutes` | `30` | Minutes before an idle pill-launched session is collected (`0` disables). |
-| `pill_system_prompt` | `""` | Extra system instructions appended to pill-launched sessions. |
 | `enabled` | | Voice on/off (what `mute`/`on` toggle). |
 | `voice`, `speed`, `volume` | | Kokoro voice and delivery. |
 | (no key) | | Briefings use the same local model. Short plain messages (most permission prompts) are spoken as they are, with no model call; a bare "ok" is not spoken. With no local model, only short plain messages are spoken, or "A turn finished." |
 | `briefing_max_words` | `25` | Cap on a spoken briefing; a decision may run slightly over. `0` lifts it. |
 | `briefing_gap_seconds` | `2.5` | Silence between two briefings that would otherwise run together. |
-| `claude_bin` | auto | Path to the `claude` binary if not on the default PATH. |
 | `bridge_host` | | The host's LXD bridge address the containers post to (written by `cc-pill-containers`). |
 | `containers` | | `{"<container>": "<token>"}`, one per wired container (written by `cc-pill-containers`). |
 | `lxc_bin` | auto | Path to the `lxc` client. |

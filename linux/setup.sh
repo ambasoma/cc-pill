@@ -773,42 +773,16 @@ PYEOF
 done
 ok "hotkey: $HOTKEY ($KDEHOTKEY)"
 
-# ---------- 3. pill sessions ----------
-head_ "3 · Sessions started through the API" "How hands-free should sessions started with POST /ask be?"
-M1="Auto-accept edits   · file edits proceed, other actions still ask (recommended)"
-M2="Fully hands-free    · skip ALL permission prompts (only for restorable machines)"
-M3="Normal              · every permission prompts, like your regular sessions"
-PCHOICEM=""
-ui_choose PCHOICEM "Permission mode" "$M1" "$M2" "$M3"
-case "$PCHOICEM" in
-  "$M2") PERM="bypass";;
-  "$M3") PERM="default";;
-  *) PERM="acceptEdits";;
-esac
-ui_input WORKDIR "Default working directory for pill sessions" "$HOME"
-WORKDIR="${WORKDIR/#\~/$HOME}"
-SYSPROMPT=""
-if ui_confirm "Add extra system instructions for pill sessions?" "n"; then
-  ui_write SYSPROMPT "System instructions"
-fi
-
-# ---------- 4. voice ----------
-head_ "4 · Voice briefings" "A local neural voice speaks a short summary when each turn finishes. One-time ~350MB model download; skip now and add later with: ./linux/setup.sh voice"
+# ---------- 3. voice ----------
+head_ "3 · Voice briefings" "A local neural voice speaks a short summary when each turn finishes. One-time ~350MB model download; skip now and add later with: ./linux/setup.sh voice"
 WANTVOICE="n"
 ui_confirm "Enable the voice?" "y" && WANTVOICE="y"
 
 # ---------- write base config ----------
-BASE_CFG=$(CCPILL_SP="$SYSPROMPT" python3 - "$WORKDIR" "$VOICE" "$PERM" "$HOTKEY" <<'PYEOF'
-import json, os, sys
-workdir, vdir, perm, hotkey = sys.argv[1:5]
-print(json.dumps({
-    "home_repo": workdir,
-    "permission_mode": perm,
-    "hotkey": hotkey,
-    "pill_gc_minutes": 30,
-    "pill_system_prompt": os.environ.get("CCPILL_SP", ""),
-    "speaker": vdir,
-}))
+BASE_CFG=$(python3 - "$VOICE" "$HOTKEY" <<'PYEOF'
+import json, sys
+vdir, hotkey = sys.argv[1:3]
+print(json.dumps({"hotkey": hotkey, "speaker": vdir}))
 PYEOF
 )
 cfg_merge "$BASE_CFG" '{"daemon_port": 17357, "name": "Jarvis", "enabled": false}'
@@ -914,9 +888,13 @@ command -v kbuildsycoca6 >/dev/null && kbuildsycoca6 >/dev/null 2>&1 || true
 ok "hotkey registered (System Settings → Shortcuts → cc-pill: Ask, if it needs adjusting)"
 
 # ---------- register hooks ----------
-head_ "Registering Claude Code hooks" "Global; existing settings are preserved."
-if [ "$WANTVOICE" = "y" ]; then register_hooks "$INSTALL" 1 "$VOICE"; else register_hooks "$INSTALL" 0 "$VOICE"; fi
-ok "hooks in ~/.claude/settings.json"
+# Only when Claude Code runs on this machine too; sessions in containers are
+# wired below.
+if command -v claude >/dev/null; then
+  head_ "Registering Claude Code hooks" "For sessions on this machine; existing settings are preserved."
+  if [ "$WANTVOICE" = "y" ]; then register_hooks "$INSTALL" 1 "$VOICE"; else register_hooks "$INSTALL" 0 "$VOICE"; fi
+  ok "hooks in ~/.claude/settings.json"
+fi
 
 # ---------- LXD containers ----------
 CONTAINERS=$(lxd_containers)
@@ -926,8 +904,10 @@ if [ -n "$CONTAINERS" ]; then
 fi
 
 # ---------- optional tmux wrapper ----------
-head_ "Optional · tmux wrapper" "Lets the pill send prompts to your own interactive claude sessions."
-if ui_confirm "Add the claude tmux wrapper to $SHELL_RC?" "y"; then
+if ! command -v claude >/dev/null; then
+  :   # no claude on this machine: nothing to wrap
+elif head_ "Optional · tmux wrapper" "Lets the pill send prompts to claude sessions on this machine." \
+     && ui_confirm "Add the claude tmux wrapper to $SHELL_RC?" "n"; then
   if ! grep -q "cc-pill claude wrapper" "$SHELL_RC" 2>/dev/null; then
     if [ "$SHELL_RC" = "$HOME/.zshrc" ]; then
       cat >> "$SHELL_RC" <<'ZRC'
