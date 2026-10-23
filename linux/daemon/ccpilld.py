@@ -1088,6 +1088,8 @@ def make_handler(store, bridge=False):
                     ok = a.ask(text)
                 elif route == "/alfred/listen":
                     ok = a.listen(body.get("on") is True)
+                elif route == "/alfred/dictate":
+                    ok = a.dictate(sid, body.get("on") is True)
                 elif route == "/alfred/confirm":
                     ok = a.confirm(pid)
                 elif route == "/alfred/cancel":

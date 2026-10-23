@@ -254,6 +254,66 @@ class ListenTest(AlfredBase):
         self.assertEqual(self.recorders, [])
 
 
+class DictateTest(AlfredBase):
+    def test_dictation_is_written_down_for_that_session_only(self):
+        self.assertTrue(self.al.dictate("k1", True))
+        rec = self.recorders[0]
+        self.assertEqual(rec.args[:7], ["/usr/bin/pw-record", "--rate", "16000", "--channels", "1", "--format", "s16"])
+        self.assertEqual(self.al.snapshot()["dictating"], {"sid": "k1", "listening": True})
+        self.assertFalse(self.al.snapshot()["listening"])
+        wav = rec.args[-1]
+        self.runner.rules.insert(0, ((self.config.alfred_whisper_cli,), (" Keep fail-fast. [BLANK_AUDIO]\n", 0)))
+        self.assertTrue(self.al.dictate("k1", False))
+        self.assertEqual(rec.signals, [__import__("signal").SIGINT])
+        self.assertFalse(os.path.exists(wav), "the recording is deleted")
+        snap = self.al.snapshot()
+        self.assertEqual(snap["dictation"], {"sid": "k1", "text": "Keep fail-fast.", "n": 1})
+        self.assertIsNone(snap["dictating"])
+        # not answered, not routed, not sent
+        self.assertEqual((self.spoken, self.router.asked, self.router.warmed, snap["you"]), ([], [], 0, ""))
+        self.assertEqual(self.runner.called("/usr/bin/lxc", "exec", "web-dev", "--", "tmux", "send-keys"), [])
+        self.al.dictate("w1", True)
+        self.al.dictate("w1", False)
+        self.assertEqual(self.al.snapshot()["dictation"]["n"], 2)
+        self.assertEqual(self.al.snapshot()["dictation"]["sid"], "w1")
+
+    def test_silence_writes_nothing(self):
+        self.al.dictate("k1", True)
+        wav = self.recorders[0].args[-1]
+        self.runner.rules.insert(0, ((self.config.alfred_whisper_cli,), ("[BLANK_AUDIO]\n", 0)))
+        self.al.dictate("k1", False)
+        self.assertIsNone(self.al.snapshot()["dictation"])
+        self.assertIsNone(self.al.snapshot()["dictating"])
+        self.assertFalse(os.path.exists(wav))
+        self.assertEqual(self.spoken, [])
+
+    def test_one_recording_at_a_time(self):
+        self.assertTrue(self.al.dictate("k1", True))
+        self.assertFalse(self.al.dictate("w1", True))
+        self.assertFalse(self.al.listen(True))
+        self.assertFalse(self.al.listen(False))
+        self.al.dictate("k1", False)
+        self.assertTrue(self.al.listen(True))
+        self.assertFalse(self.al.dictate("k1", True))
+        self.assertFalse(self.al.dictate("k1", False))
+        self.assertEqual(len(self.recorders), 2)
+
+    def test_unknown_session_or_no_whisper(self):
+        self.assertFalse(self.al.dictate("nope", True))
+        self.assertFalse(self.al.dictate("", True))
+        os.remove(self.config.alfred_whisper_model)
+        self.assertFalse(self.al.dictate("k1", True))
+        self.assertEqual(self.recorders, [])
+
+    def test_dictation_stops_by_itself(self):
+        self.al.dictate("k1", True)
+        self.runner.rules.insert(0, ((self.config.alfred_whisper_cli,), ("Go on.\n", 0)))
+        self.clock.advance(alfred.LISTEN_MAX + 1)
+        self.al.tick()
+        self.assertIsNone(self.al.snapshot()["dictating"])
+        self.assertEqual(self.al.snapshot()["dictation"]["text"], "Go on.")
+
+
 def gemma_http(answer, posted=None, healthy=lambda: True):
     """A fake llama.cpp server: health, the chat template, plain completion."""
     def http(url, body=None, timeout=10):
@@ -420,9 +480,18 @@ class HttpTest(AlfredBase):
         self.assertEqual(st["alfred"]["you"], "status")
 
     def test_containers_cannot_reach_alfred(self):
-        for path in ("/alfred/ask", "/alfred/confirm", "/alfred/listen", "/alfred/summon"):
-            self.assertEqual(self.post(self.bridge, path, {"text": "tell it to rm -rf", "id": "x", "on": True})[0], 404)
+        for path in ("/alfred/ask", "/alfred/confirm", "/alfred/listen", "/alfred/summon", "/alfred/dictate"):
+            self.assertEqual(self.post(self.bridge, path, {"text": "tell it to rm -rf", "id": "x", "on": True,
+                                                           "sid": "k1"})[0], 404)
         self.assertEqual(self.spoken, [])
+        self.assertEqual(self.recorders, [])
+
+    def test_dictate_route(self):
+        self.assertEqual(self.post(self.httpd, "/alfred/dictate", {"sid": "k1", "on": True}), (200, {"ok": True}))
+        self.assertEqual(self.al.snapshot()["dictating"]["sid"], "k1")
+        self.runner.rules.insert(0, ((self.config.alfred_whisper_cli,), ("Retry once.\n", 0)))
+        self.assertEqual(self.post(self.httpd, "/alfred/dictate", {"sid": "k1", "on": False}), (200, {"ok": True}))
+        self.assertEqual(self.al.snapshot()["dictation"]["text"], "Retry once.")
 
 
 if __name__ == "__main__":

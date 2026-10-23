@@ -237,6 +237,9 @@ class Alfred:
         self.recorder = None
         self.wav = None
         self.listen_until = 0.0
+        self.dictating = None       # {"sid", "listening"}: a dictation being recorded or written down
+        self.dictation = None       # {"sid", "text", "n"}: the last one written down
+        self.dictations = 0
 
     # --------------------------------------------------------------- state
 
@@ -251,6 +254,7 @@ class Alfred:
             "summon": self.summons, "busy": self.busy, "listening": self.listening,
             "can_listen": self.can_listen(), "you": self.you, "reply": self.reply,
             "pending": {"id": p["id"], "sid": p["sid"], "label": p["label"], "text": p["text"]} if p else None,
+            "dictating": self.dictating, "dictation": self.dictation,
         }
 
     def tick(self):
@@ -258,6 +262,9 @@ class Alfred:
             self.router.tick()
         if self.listening and self.clock() > self.listen_until:
             self.listen(False)
+        d = self.dictating
+        if d and d["listening"] and self.clock() > self.listen_until:
+            self.dictate(d["sid"], False)
         p = self.pending
         if p and self.clock() - p["at"] > PENDING_TTL:
             self.pending = None
@@ -303,28 +310,69 @@ class Alfred:
         """Hold-to-talk: on starts the recording, off stops it and hands the
         words to ask()."""
         if on:
-            if self.listening or not self.can_listen():
+            if self.listening or self.dictating or not self._record():
                 return False
-            os.makedirs(self.data_dir, exist_ok=True)
-            self.wav = os.path.join(self.data_dir, f"heard-{time.time_ns()}.wav")
-            rec = self.config.alfred_recorder
-            args = ([rec, "--rate", "16000", "--channels", "1", "--format", "s16", self.wav]
-                    if os.path.basename(rec) == "pw-record"
-                    else [rec, "-q", "-f", "S16_LE", "-r", "16000", "-c", "1", self.wav])
-            try:
-                self.recorder = self.popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                           stderr=subprocess.DEVNULL)
-            except OSError:
-                self.recorder = None
-                return False
-            self.stop_speech()
             self.listening = True
-            self.listen_until = self.clock() + LISTEN_MAX
             self._warm()
             return True
         if not self.listening:
             return False
         self.listening = False
+        wav = self._stop_recording()
+        self.busy = True
+        self._run(self._transcribe_then_answer, wav)
+        return True
+
+    def dictate(self, sid, on):
+        """Hold-to-talk into one session's prompt field: on starts the
+        recording, off stops it and writes the words down as `dictation`
+        for the card. No model reads them and nothing is sent: you check
+        the text and press send."""
+        if on:
+            if (self.listening or self.dictating or not sid
+                    or not any(s["id"] == sid for s in self.store.snapshot()["sessions"])
+                    or not self._record()):
+                return False
+            self.dictating = {"sid": sid, "listening": True}
+            return True
+        d = self.dictating
+        if not d or not d["listening"]:
+            return False
+        self.dictating = {"sid": d["sid"], "listening": False}
+        wav = self._stop_recording()
+        self._run(self._write_down, d["sid"], wav)
+        return True
+
+    # ------------------------------------------------------------ internals
+
+    def _run(self, fn, *args):
+        if self.background:
+            threading.Thread(target=fn, args=args, daemon=True).start()
+        else:
+            fn(*args)
+
+    def _record(self):
+        """Start pw-record (or arecord) into a new WAV; False if it can't."""
+        if not self.can_listen():
+            return False
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.wav = os.path.join(self.data_dir, f"heard-{time.time_ns()}.wav")
+        rec = self.config.alfred_recorder
+        args = ([rec, "--rate", "16000", "--channels", "1", "--format", "s16", self.wav]
+                if os.path.basename(rec) == "pw-record"
+                else [rec, "-q", "-f", "S16_LE", "-r", "16000", "-c", "1", self.wav])
+        try:
+            self.recorder = self.popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+        except OSError:
+            self.recorder = self.wav = None
+            return False
+        self.stop_speech()
+        self.listen_until = self.clock() + LISTEN_MAX
+        return True
+
+    def _stop_recording(self):
+        """Stop the recorder; the WAV it wrote."""
         rec, wav = self.recorder, self.wav
         self.recorder = self.wav = None
         if rec:
@@ -336,19 +384,24 @@ class Alfred:
                     rec.kill()
                 except Exception:
                     pass
-        self.busy = True
-        self._run(self._transcribe_then_answer, wav)
-        return True
+        return wav
 
-    # ------------------------------------------------------------ internals
+    def _write_down(self, sid, wav):
+        text = ""
+        try:
+            text = self._transcribe(wav)
+        finally:
+            self.dictating = None
+        if not text:
+            self.store.log_line("alfred: heard nothing to write down")
+            return
+        self.dictations += 1
+        self.dictation = {"sid": sid, "text": text[:2000], "n": self.dictations}
+        self.store.log_line(f"alfred: wrote down {len(text.split())} words for {sid}")
 
-    def _run(self, fn, *args):
-        if self.background:
-            threading.Thread(target=fn, args=args, daemon=True).start()
-        else:
-            fn(*args)
-
-    def _transcribe_then_answer(self, wav):
+    def _transcribe(self, wav):
+        """Whisper's text for a WAV, without its noise marks; the WAV is
+        deleted."""
         text = ""
         try:
             c = self.config
@@ -362,6 +415,10 @@ class Alfred:
                 os.remove(wav)
             except (OSError, TypeError):
                 pass
+        return text
+
+    def _transcribe_then_answer(self, wav):
+        text = self._transcribe(wav)
         if not text:
             self.busy = False
             self._say("I didn't catch that.")
