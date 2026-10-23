@@ -84,6 +84,7 @@ The widget is the signal. One dot per session in the colour scheme's accent, neu
 - **Spoken briefings.** Your named assistant (default: Jarvis) speaks a 1-3 sentence summary when a turn ends. Never a transcript: code, paths and IDs are described in plain speech, and the persona is yours to choose or write. Local TTS ([Kokoro](https://github.com/thewh1teagle/kokoro-onnx)), summarized by a local model on your GPU (Gemma 4 E2B through llama.cpp): no cloud model, no Claude login on this machine. When the session asks you something, the briefing ends with that question put to you, never answered for you. Plays through PipeWire or PulseAudio; if your music is playing it ducks over MPRIS, speaks, and resumes.
 - **The bloom.** The briefing hangs off the panel in a window that takes no focus, words paced to the audio, gone a few seconds after the voice stops. Or widen the pill to fit it, or crawl it through the slot.
 - **Courtesy layer.** Silent (text-only bloom) when you are already looking at that session's terminal. Silent for SSH sessions. Re-orients you ("On the api work, ...") when the last briefing you heard was a while ago or from another project.
+- **Quiet by choice.** Mute one session from its row in the card; with `speak_only_when_needed` on, Alfred speaks only when a session asks you something or wants a permission. Replays and his answers to you always speak.
 - **Alfred, the assistant.** <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> (your choice) anywhere opens the card on an "Ask Alfred" box. Type a request, or hold <kbd>Space</kbd> (or the mic button) and say it. "What's going on?" gets a spoken briefing of every session, needs-you first. "How is todo-app doing?" gets that session's state and last news. "Tell the waiting todo-app to keep fail-fast" gets a question back ("Send 'Keep fail-fast.' to todo-app in web dev?"), and the message goes into that session only after you press *Send* or say "yes". Other questions about the sessions get a one-sentence answer. See [Alfred](#alfred) below.
 - **Native and configurable.** Panel font and colour scheme by default; every colour, the font, capsule, border, corners, hit area, hover behaviour and placement are yours to change.
 
@@ -167,7 +168,7 @@ Optional, each one unlocks a courtesy:
 | Control | What it does |
 | --- | --- |
 | <kbd>Meta</kbd><kbd>Alt</kbd><kbd>M</kbd> (your choice) | Opens the card on Alfred's box: type and <kbd>Enter</kbd>, or hold <kbd>Space</kbd> and talk. |
-| Click the pill | The card: one row per session with its last briefing and replay-briefing and send-a-prompt buttons, a pin that keeps the card open, and the mute toggle. |
+| Click the pill | The card: one row per session with its last briefing, and buttons to replay it (stop while it speaks), mute that session, and send it a prompt; in the prompt box, hold <kbd>Space</kbd> (or the mic) to dictate. A pin keeps the card open; mute for the whole voice is in the footer. |
 | Hover the pill | Tooltip with the session summary, or with *peek on hover* the card itself in a no-focus window. |
 | <kbd>Enter</kbd> / <kbd>Space</kbd> on the focused widget | Opens the card (the panel can focus widgets from the keyboard). |
 | `<yourname>` in the shell | Alias created by setup: `mute`, `on`, `stop`, `last` (replay briefing), `say <text>`, `voice <name>`, `vol`, `speed`. |
@@ -218,6 +219,7 @@ The assistant behind the hotkey. He reports and passes on messages; he can't run
 
 - **Routing** (which of these you mean, which session, what to send) runs on a local Gemma 4 E2B model on the GPU through llama.cpp: about 2 to 3 seconds. The hotkey starts it, so it loads while you type; it stops after 15 minutes unused. A request waits for it while it loads. The model only picks; Alfred writes every sentence he says, and sends nothing without your yes.
 - **Hold-to-talk** records with `pw-record` while you hold <kbd>Space</kbd> in the empty box (or the mic button), then a local Whisper (`base.en`) turns it into text in about a second and a half. The recording is deleted right away.
+- **Dictation into a session**: in a session's prompt box, hold <kbd>Space</kbd> while it is empty (or hold the mic next to *Send*). The words are typed into the box, not sent: you read them and press *Send*. Same local Whisper; no model call.
 - The local model and Whisper come from `~/.local/opt/local-ai` when they are there; set the `alfred_*` keys to use others. Without a local model, Alfred still briefs; the rest needs it. Nothing goes to a cloud model.
 
 ## How it works
@@ -258,6 +260,8 @@ Localhost only. Every request must carry the header `X-CC-Pill: 1`, and any requ
 | `POST /alfred/listen` | `{"on"}` | Hold-to-talk: `true` starts recording, `false` stops and asks |
 | `POST /alfred/confirm` | `{"id"}` | Send the message Alfred proposed (`state.alfred.pending`) |
 | `POST /alfred/cancel` | `{"id"}` | Drop it |
+| `POST /alfred/dictate` | `{"sid","on"}` | Dictation into that session's prompt box: `true` records, `false` stops; the text shows in `state.alfred.dictation` |
+| `POST /session/mute` | `{"sid","on"}` | Mute or unmute one session's briefings (`muted` in each session of `/state`) |
 | `POST /recap` | `{"sid"}` | Replay that session's last briefing |
 | `POST /prompt` | `{"sid","text"}` | Type a prompt into that session's tmux pane |
 | `POST /mute` | | Toggle the voice, returns `{"muted"}` |
