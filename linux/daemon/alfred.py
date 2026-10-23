@@ -34,7 +34,8 @@ YES = re.compile(r"^\W*(yes|yeah|yep|yup|sure|ok(ay)?|send( it)?|do it|go( ahead
 NO = re.compile(r"^\W*(no|nope|cancel|don'?t|stop|never ?mind|forget it)\b", re.I)
 BRIEF = re.compile(r"what(?:'s| is|s) (going on|happening|up|new)|\bstatus\b|\bbrief\b|catch me up"
                    r"|update me|give me an update|how are (things|my sessions|we doing|the sessions)"
-                   r"|\boverview\b|anything (new|for me)|where are we|what did i miss", re.I)
+                   r"|\boverview\b|anything (new|for me)|where are we|what did i miss"
+                   r"|\bsummar(y|ise|ize)\b|\brecap\b", re.I)
 # Whisper marks silence and noise like this; they are not words.
 WHISPER_NOISE = re.compile(r"\[[^\]]*\]|\([^)]*\)")
 
@@ -48,7 +49,8 @@ ROUTE_SCHEMA = {
     "properties": {
         "intent": {"type": "string", "enum": ["brief", "send", "detail", "answer"]},
         "n": {"type": "integer"},
-        "text": {"type": "string"},
+        # capped, so the rule makes the model close the object in time
+        "text": {"type": "string", "maxLength": 200},
     },
     "required": ["intent", "n", "text"],
 }
@@ -79,6 +81,19 @@ def activity_words(act, clipped_at=44):
     if len(act) >= clipped_at - 1 and " " in act:
         act = act.rsplit(" ", 1)[0].rstrip(" .;:,")
     return act
+
+
+def salvage(text):
+    """intent, n and text from an answer cut off before its closing brace."""
+    if not text:
+        return None
+    intent = re.search(r'"intent"\s*:\s*"(brief|send|detail|answer)"', text)
+    if not intent:
+        return None
+    n = re.search(r'"n"\s*:\s*(\d+)', text)
+    said = re.search(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)', text)
+    return {"intent": intent.group(1), "n": int(n.group(1)) if n else 0,
+            "text": said.group(1) if said else ""}
 
 
 def first_json(text):
@@ -206,9 +221,12 @@ class Router:
                 ready = self.healthy()
         if ready:
             prompt = self._prompt(system, request)
-            out = self.http(self.url + "/completion", self._body(prompt, 60), timeout=20.0) if prompt else None
+            out = self.http(self.url + "/completion", self._body(prompt, 120), timeout=30.0) if prompt else None
             content = out.get("content") if isinstance(out, dict) else None
             got = first_json(content if "}" in (content or "") else (content or "") + "}") if content else None
+            got = got or salvage(content)
+            if not got and content:
+                self.log(f"alfred: unreadable answer from the local model: {content[:120]!r}")
             if got:
                 self.log(f"alfred: routed by the local model in {self.clock() - start:.1f}s")
                 return got

@@ -107,6 +107,7 @@ class BriefTest(AlfredBase):
 
     def test_the_ways_people_ask_for_a_briefing(self):
         for q in ("What's going on?", "what is going on", "Whats happening", "status", "brief me",
+                  "How about now, summary?", "summarize please", "give me a recap",
                   "Catch me up.", "Give me an update", "how are my sessions", "anything for me?",
                   "Where are we?", "What did I miss?"):
             self.al.ask(q)
@@ -360,6 +361,14 @@ class RouterTest(unittest.TestCase):
         self.assertEqual(prompt.count("<|turn>model"), 1)
         self.assertNotIn("<turn|>\n<|turn>model\n{", prompt.split("<|turn>user")[1][:-len("<turn|>\n<|turn>model\n")])
 
+    def test_an_answer_cut_off_mid_text_is_salvaged(self):
+        r = alfred.Router("http://x", None,
+                          http=gemma_http('{"intent": "answer", "n": 0, "text": "Two sessions are working and one'))
+        self.assertEqual(r.route("s", "q"), {"intent": "answer", "n": 0, "text": "Two sessions are working and one"})
+
+    def test_the_answer_text_is_capped_in_the_rule(self):
+        self.assertEqual(alfred.ROUTE_SCHEMA["properties"]["text"]["maxLength"], 200)
+
     def test_answer_cut_at_the_closing_brace_is_read(self):
         r = alfred.Router("http://x", None, None,
                           http=gemma_http('{\n  "intent": "send",\n  "n": 1,\n  "text": "Go."\n'))
@@ -371,6 +380,7 @@ class RouterTest(unittest.TestCase):
             r = alfred.Router("http://127.0.0.1:8099", None, http=http, log=logged.append)
             self.assertIsNone(r.route("sys", "how is it?"))
         self.assertEqual(logged, ["alfred: no local model to route with",
+                                  "alfred: unreadable answer from the local model: 'not json at all'",
                                   "alfred: the local model could not route the request"])
         self.assertFalse(hasattr(r, "haiku"))
 
