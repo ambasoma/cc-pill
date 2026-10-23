@@ -63,6 +63,18 @@ Item {
 
     onVisibleChanged: if (!visible) inputFor = ""
 
+    // Dictation: the daemon writes down what you said for one session, and
+    // its row puts the words into the prompt field for you to check and send.
+    signal dictated(string sid, string text)
+    property int dictationSeen: -1
+    onPdChanged: {
+        if (!pd || !pd.alfred) return
+        const d = pd.alfred.dictation
+        const n = d ? d.n : 0
+        if (d && dictationSeen >= 0 && n !== dictationSeen && !peek) dictated(d.sid, d.text)
+        dictationSeen = n
+    }
+
     ColumnLayout {
         id: column
         anchors { left: parent.left; right: parent.right; top: parent.top; margins: card.pad }
@@ -315,12 +327,70 @@ Item {
                         Layout.topMargin: card.gap
                         visible: row.typing
                         onVisibleChanged: if (visible) promptField.forceActiveFocus()
+                        readonly property var al: card.pd ? card.pd.alfred : null
+                        readonly property bool canDictate: !!al && al.can_listen
+                        readonly property var dictating: al && al.dictating && al.dictating.sid === row.modelData.id
+                                                         ? al.dictating : null
+                        Connections {
+                            target: card
+                            function onDictated(sid, text) {
+                                if (sid !== row.modelData.id || !text) return
+                                const had = promptField.text.replace(/\s+$/, "")
+                                promptField.text = had.length ? had + " " + text : text
+                                card.inputFor = row.modelData.id
+                                promptField.cursorPosition = promptField.text.length
+                                promptField.forceActiveFocus()
+                            }
+                        }
                         PlasmaComponents3.TextField {
                             id: promptField
                             Layout.fillWidth: true
-                            placeholderText: "Message " + row.modelData.repo + (row.modelData.container ? " in " + row.modelData.container : "") + "…"
+                            readonly property string target: row.modelData.repo + (row.modelData.container ? " in " + row.modelData.container : "")
+                            placeholderText: parent.dictating ? (parent.dictating.listening ? "Listening\u2026" : "Writing it down\u2026")
+                                             : parent.canDictate ? "Message " + target + ", or hold Space to talk"
+                                             : "Message " + target + "\u2026"
                             onAccepted: sendButton.clicked()
                             Keys.onEscapePressed: card.inputFor = ""
+                            // Hold Space in the empty field to dictate: a tap does
+                            // nothing, a hold records until you let go.
+                            Keys.onPressed: event => {
+                                if (event.key !== Qt.Key_Space || text.length > 0 || !parent.canDictate) return
+                                event.accepted = true
+                                if (!event.isAutoRepeat && !holdToDictate.running && !holdToDictate.held && !parent.dictating)
+                                    holdToDictate.start()
+                            }
+                            Keys.onReleased: event => {
+                                if (event.key !== Qt.Key_Space || event.isAutoRepeat || text.length > 0) return
+                                event.accepted = true
+                                if (holdToDictate.running) {
+                                    holdToDictate.stop()
+                                } else if (holdToDictate.held) {
+                                    holdToDictate.held = false
+                                    card.ctl.post("/alfred/dictate", { sid: row.modelData.id, on: false })
+                                }
+                            }
+                            Timer {
+                                id: holdToDictate
+                                property bool held: false
+                                interval: 250
+                                onTriggered: {
+                                    held = true
+                                    card.ctl.post("/alfred/dictate", { sid: row.modelData.id, on: true })
+                                }
+                            }
+                        }
+                        PlasmaComponents3.ToolButton {
+                            visible: parent.canDictate
+                            focusPolicy: Qt.NoFocus      // the field keeps the keyboard
+                            display: PlasmaComponents3.AbstractButton.IconOnly
+                            icon.name: "audio-input-microphone-symbolic"
+                            text: "Hold to dictate"
+                            checked: !!parent.dictating && parent.dictating.listening
+                            onPressed: card.ctl.post("/alfred/dictate", { sid: row.modelData.id, on: true })
+                            onReleased: card.ctl.post("/alfred/dictate", { sid: row.modelData.id, on: false })
+                            Accessible.name: text
+                            PlasmaComponents3.ToolTip.text: text
+                            PlasmaComponents3.ToolTip.visible: hovered
                         }
                         PlasmaComponents3.ToolButton {
                             id: sendButton
